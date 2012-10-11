@@ -1,22 +1,23 @@
 /*
- * Copyright (c) 1999-2003, 2006-2007 Apple Inc.  All Rights Reserved.
- * 
+ * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.1 (the "License").  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON- INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -26,18 +27,12 @@
 	Copyright 1990-1996 NeXT Software, Inc.
 */
 
+#warning the API in this header is obsolete
+
 #ifndef _OBJC_MAPTABLE_H_
 #define _OBJC_MAPTABLE_H_
 
-#ifndef _OBJC_PRIVATE_H_
-#   define OBJC_MAP_AVAILABILITY __OSX_AVAILABLE_BUT_DEPRECATED(__MAC_10_0,__MAC_10_1, __IPHONE_NA,__IPHONE_NA);
-#else
-#   define OBJC_MAP_AVAILABILITY
-#endif
-
-#include <objc/objc.h>
-
-__BEGIN_DECLS
+#import <objc/objc.h>
 
 /***************	Definitions		***************/
 
@@ -49,16 +44,16 @@ typedef struct _NXMapTable {
     /* private data structure; may change */
     const struct _NXMapTablePrototype	*prototype;
     unsigned	count;
-    unsigned	nbBucketsMinusOne;
+    unsigned	nbBuckets;
     void	*buckets;
-} NXMapTable OBJC_MAP_AVAILABILITY;
+} NXMapTable;
 
 typedef struct _NXMapTablePrototype {
     unsigned	(*hash)(NXMapTable *, const void *key);
     int		(*isEqual)(NXMapTable *, const void *key1, const void *key2);
     void	(*free)(NXMapTable *, void *key, void *value);
     int		style; /* reserved for future expansion; currently 0 */
-} NXMapTablePrototype OBJC_MAP_AVAILABILITY;
+} NXMapTablePrototype;
     
     /* invariants assumed by the implementation: 
 	A - key != -1
@@ -72,32 +67,32 @@ typedef struct _NXMapTablePrototype {
 
 /***************	Functions		***************/
 
-OBJC_EXPORT NXMapTable *NXCreateMapTableFromZone(NXMapTablePrototype prototype, unsigned capacity, void *z) OBJC_MAP_AVAILABILITY;
-OBJC_EXPORT NXMapTable *NXCreateMapTable(NXMapTablePrototype prototype, unsigned capacity) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT NXMapTable *NXCreateMapTableFromZone(NXMapTablePrototype prototype, unsigned capacity, void *z);
+OBJC_EXPORT NXMapTable *NXCreateMapTable(NXMapTablePrototype prototype, unsigned capacity);
     /* capacity is only a hint; 0 creates a small table */
 
-OBJC_EXPORT void NXFreeMapTable(NXMapTable *table) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void NXFreeMapTable(NXMapTable *table);
     /* call free for each pair, and recovers table */
 	
-OBJC_EXPORT void NXResetMapTable(NXMapTable *table) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void NXResetMapTable(NXMapTable *table);
     /* free each pair; keep current capacity */
 
-OBJC_EXPORT BOOL NXCompareMapTables(NXMapTable *table1, NXMapTable *table2) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT BOOL NXCompareMapTables(NXMapTable *table1, NXMapTable *table2);
     /* Returns YES if the two sets are equal (each member of table1 in table2, and table have same size) */
 
-OBJC_EXPORT unsigned NXCountMapTable(NXMapTable *table) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT unsigned NXCountMapTable(NXMapTable *table);
     /* current number of data in table */
 	
-OBJC_EXPORT void *NXMapMember(NXMapTable *table, const void *key, void **value) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void *NXMapMember(NXMapTable *table, const void *key, void **value);
     /* return original table key or NX_MAPNOTAKEY.  If key is found, value is set */
 	
-OBJC_EXPORT void *NXMapGet(NXMapTable *table, const void *key) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void *NXMapGet(NXMapTable *table, const void *key);
     /* return original corresponding value or NULL.  When NULL need be stored as value, NXMapMember can be used to test for presence */
 	
-OBJC_EXPORT void *NXMapInsert(NXMapTable *table, const void *key, const void *value) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void *NXMapInsert(NXMapTable *table, const void *key, const void *value);
     /* override preexisting pair; Return previous value or NULL. */
 	
-OBJC_EXPORT void *NXMapRemove(NXMapTable *table, const void *key) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT void *NXMapRemove(NXMapTable *table, const void *key);
     /* previous value or NULL is returned */
 	
 /* Iteration over all elements of a table consists in setting up an iteration state and then to progress until all entries have been visited.  An example of use for counting elements in a table is:
@@ -110,27 +105,25 @@ OBJC_EXPORT void *NXMapRemove(NXMapTable *table, const void *key) OBJC_MAP_AVAIL
     }
 */
 
-typedef struct {int index;} NXMapState OBJC_MAP_AVAILABILITY;
+typedef struct {int index;} NXMapState;
     /* callers should not rely on actual contents of the struct */
 
-OBJC_EXPORT NXMapState NXInitMapState(NXMapTable *table) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT NXMapState NXInitMapState(NXMapTable *table);
 
-OBJC_EXPORT int NXNextMapState(NXMapTable *table, NXMapState *state, const void **key, const void **value) OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT int NXNextMapState(NXMapTable *table, NXMapState *state, const void **key, const void **value);
     /* returns 0 when all elements have been visited */
 
 /***************	Conveniences		***************/
 
-OBJC_EXPORT const NXMapTablePrototype NXPtrValueMapPrototype OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT const NXMapTablePrototype NXPtrValueMapPrototype;
     /* hashing is pointer/integer hashing;
       isEqual is identity;
       free is no-op. */
-OBJC_EXPORT const NXMapTablePrototype NXStrValueMapPrototype OBJC_MAP_AVAILABILITY;
+OBJC_EXPORT const NXMapTablePrototype NXStrValueMapPrototype;
     /* hashing is string hashing;
       isEqual is strcmp;
       free is no-op. */
-OBJC_EXPORT const NXMapTablePrototype NXObjectMapPrototype  OBJC2_UNAVAILABLE;
+OBJC_EXPORT const NXMapTablePrototype NXObjectMapPrototype;
     /* for objects; uses methods: hash, isEqual:, free, all for key. */
-
-__END_DECLS
 
 #endif /* _OBJC_MAPTABLE_H_ */

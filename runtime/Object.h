@@ -1,22 +1,23 @@
 /*
- * Copyright (c) 1999-2003, 2005-2007 Apple Inc.  All Rights Reserved.
- * 
+ * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.1 (the "License").  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON- INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -32,25 +33,10 @@
 #ifndef _OBJC_OBJECT_H_
 #define _OBJC_OBJECT_H_
 
-#include <stdarg.h>
-#import <objc/objc-runtime.h>
+#include <objc/objc-runtime.h>
 
-#if __OBJC2__
+@class Protocol;
 
-__OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_NA)
-@interface Object
-{
-	Class isa;	/* A pointer to the instance's class structure */
-}
-
-+class;
--(BOOL) isEqual:anObject;
-
-@end
-
-#else
-
-__OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_NA)
 @interface Object
 {
 	Class isa;	/* A pointer to the instance's class structure */
@@ -164,6 +150,7 @@ __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_NA)
 
 /* Abstract Protocol for Dynamic Loading */
 
+#if !defined(NeXT_PDO)
 @interface Object (DynamicLoading)
 
 //+ finishLoading:(headerType *)header;
@@ -171,7 +158,12 @@ __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_NA)
 + startUnloading;
 
 @end
-
 #endif
+
+OBJC_EXPORT id object_dispose(Object *anObject);
+OBJC_EXPORT id object_copy(Object *anObject, unsigned nBytes);
+OBJC_EXPORT id object_copyFromZone(Object *anObject, unsigned nBytes, void *z);
+OBJC_EXPORT id object_realloc(Object *anObject, unsigned nBytes);
+OBJC_EXPORT id object_reallocFromZone(Object *anObject, unsigned nBytes, void *z);
 
 #endif /* _OBJC_OBJECT_H_ */

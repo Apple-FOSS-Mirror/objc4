@@ -21,35 +21,53 @@
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
-// Copyright 1988-1996 NeXT Software, Inc.
+/*
+ *	Copyright 1988-1996 NeXT Software, Inc.
+ *
+ *	objc-msg.s
+ *
+ *	31-Dec-96  Umesh Vaishampayan  (umeshv@NeXT.com)
+ *		Added support for ppc. cleaned m98k and m88k stuff.
+ */
 
-#if defined(WIN32)
-    #if defined(NSBUILDINGOBJC)
-        #define OBJC_EXPORT __declspec(dllexport) extern
+#import "../objc-config.h"
+
+#if defined (m68k)
+    #if defined(OBJC_COLLECTING_CACHE)
+        #include "objc-msg-m68k-nolock.s"
     #else
-        #if !defined(OBJC_EXPORT)
-            #define OBJC_EXPORT __declspec(dllimport) extern
+        #include "objc-msg-m68k-lock.s"
+    #endif
+
+#elif defined (WIN32)
+    #include "objc-msg-i386-nextpdo-winnt3.5.s"
+
+#elif defined (__i386__) || defined (i386)
+    #include "objc-msg-i386.s"
+
+#elif defined (hppa)
+    #if defined(NeXT_PDO)
+        #if defined(NSBUILDINGHPUXSHLIB)
+            #include "objc-msg-hppa-pdo-pic.s"
+        #else
+            #include "objc-msg-hppa-pdo.s"
         #endif
-    #endif
-    #if !defined(OBJC_IMPORT)
-        #define OBJC_IMPORT __declspec(dllimport) extern
-    #endif
-#endif
-
-#if !defined(OBJC_EXPORT)
-    #define OBJC_EXPORT extern
-#endif
-
-#if !defined(OBJC_IMPORT)
-    #define OBJC_IMPORT extern
-#endif
-
-
-// obsolete
-#if !defined(NEXTPDO)
-    #if defined(WIN32)
-        #define NEXTPDO __declspec(dllimport) extern
+    #elif defined(OBJC_COLLECTING_CACHE)
+        #include "objc-msg-hppa-nolock.s"
     #else
-        #define NEXTPDO extern
+        #include "objc-msg-hppa-lock.s"
     #endif
+
+#elif defined (sparc)
+    #if defined(NeXT_PDO)
+        #include "objc-msg-sparc-pdo.s"
+    #else
+        #include "objc-msg-sparc.s"
+    #endif
+
+#elif defined (__ppc__) || defined(ppc)
+    #include "objc-msg-ppc.s"
+
+#else
+    #error Architecture not supported
 #endif

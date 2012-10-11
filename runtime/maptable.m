@@ -1,22 +1,23 @@
 /*
- * Copyright (c) 1999-2003, 2005-2007 Apple Inc.  All Rights Reserved.
- * 
+ * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.1 (the "License").  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON- INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -25,15 +26,22 @@
 	Created by Bertrand Serlet, August 1990
  */
 
+#if defined(WIN32)
+    #include <winnt-pdo.h>
+#endif
 
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
+#import "objc-private.h"
+#import "maptable.h"
 
-#include "objc-private.h"
-#include "maptable.h"
-#include "hashtable2.h"
+#import <string.h>
+#import <stdlib.h>
+#import <stdio.h>
+#import <objc/Object.h>
+#import <objc/hashtable2.h>
 
+#if defined(NeXT_PDO)
+    #import <pdo.h>
+#endif
 
 /******		Macros and utilities	****************************/
 
@@ -48,18 +56,15 @@ typedef struct _MapPair {
     const void	*value;
 } MapPair;
 
-static unsigned log2u(unsigned x) { return (x<2) ? 0 : log2u(x>>1)+1; };
+static unsigned log2(unsigned x) { return (x<2) ? 0 : log2(x>>1)+1; };
 
-static INLINE unsigned exp2u(unsigned x) { return (1 << x); };
+static INLINE unsigned exp2m1(unsigned x) { return (1 << x) - 1; };
 
-static INLINE unsigned xorHash(unsigned hash) { 
-    unsigned xored = (hash & 0xffff) ^ (hash >> 16);
-    return ((xored * 65521) + hash);
-}
-
+/* iff necessary this modulo can be optimized since the nbBuckets is of the form 2**n-1 */
 static INLINE unsigned bucketOf(NXMapTable *table, const void *key) {
     unsigned	hash = (table->prototype->hash)(table, key);
-    return hash & table->nbBucketsMinusOne;
+    unsigned	xored = (hash & 0xffff) ^ (hash >> 16);
+    return ((xored * 65521) + hash) % table->nbBuckets;
 }
 
 static INLINE int isEqual(NXMapTable *table, const void *key1, const void *key2) {
@@ -67,7 +72,7 @@ static INLINE int isEqual(NXMapTable *table, const void *key1, const void *key2)
 }
 
 static INLINE unsigned nextIndex(NXMapTable *table, unsigned index) {
-    return (index + 1) & table->nbBucketsMinusOne;
+    return (index+1 >= table->nbBuckets) ? 0 : index+1;
 }
 
 static INLINE void *allocBuckets(void *z, unsigned nb) {
@@ -86,10 +91,10 @@ static int isEqualPrototype (const void *info, const void *data1, const void *da
     return (proto1->hash == proto2->hash) && (proto1->isEqual == proto2->isEqual) && (proto1->free == proto2->free) && (proto1->style == proto2->style);
     };
 
-static uintptr_t hashPrototype (const void *info, const void *data) {
+static uarith_t hashPrototype (const void *info, const void *data) {
     NXHashTablePrototype        *proto = (NXHashTablePrototype *) data;
 
-    return NXPtrHash(info, proto->hash) ^ NXPtrHash(info, proto->isEqual) ^ NXPtrHash(info, proto->free) ^ (uintptr_t) proto->style;
+    return NXPtrHash(info, proto->hash) ^ NXPtrHash(info, proto->isEqual) ^ NXPtrHash(info, proto->free) ^ (uarith_t) proto->style;
     };
 
 static NXHashTablePrototype protoPrototype = {
@@ -106,7 +111,7 @@ NXMapTable *NXCreateMapTableFromZone(NXMapTablePrototype prototype, unsigned cap
     NXMapTablePrototype		*proto;
     if (! prototypes) prototypes = NXCreateHashTable(protoPrototype, 0, NULL);
     if (! prototype.hash || ! prototype.isEqual || ! prototype.free || prototype.style) {
-	_objc_inform("*** NXCreateMapTable: invalid creation parameters\n");
+	_NXLogError("*** NXCreateMapTable: invalid creation parameters\n");
 	return NULL;
     }
     proto = NXHashGet(prototypes, &prototype); 
@@ -116,8 +121,8 @@ NXMapTable *NXCreateMapTableFromZone(NXMapTablePrototype prototype, unsigned cap
     	(void)NXHashInsert(prototypes, proto);
     }
     table->prototype = proto; table->count = 0;
-    table->nbBucketsMinusOne = exp2u(log2u(capacity)+1) - 1;
-    table->buckets = allocBuckets(z, table->nbBucketsMinusOne + 1);
+    table->nbBuckets = exp2m1(log2(capacity)+1);
+    table->buckets = allocBuckets(z, table->nbBuckets);
     return table;
 }
 
@@ -134,7 +139,7 @@ void NXFreeMapTable(NXMapTable *table) {
 void NXResetMapTable(NXMapTable *table) {
     MapPair	*pairs = table->buckets;
     void	(*freeProc)(struct _NXMapTable *, void *, void *) = table->prototype->free;
-    unsigned	index = table->nbBucketsMinusOne + 1;
+    unsigned	index = table->nbBuckets;
     while (index--) {
 	if (pairs->key != NX_MAPNOTAKEY) {
 	    freeProc(table, (void *)pairs->key, (void *)pairs->value);
@@ -161,17 +166,24 @@ BOOL NXCompareMapTables(NXMapTable *table1, NXMapTable *table2) {
 
 unsigned NXCountMapTable(NXMapTable *table) { return table->count; }
 
+static int mapSearch = 0;
+static int mapSearchHit = 0;
+static int mapSearchLoop = 0;
+
 static INLINE void *_NXMapMember(NXMapTable *table, const void *key, void **value) {
     MapPair	*pairs = table->buckets;
     unsigned	index = bucketOf(table, key);
     MapPair	*pair = pairs + index;
     if (pair->key == NX_MAPNOTAKEY) return NX_MAPNOTAKEY;
+    mapSearch ++;
     if (isEqual(table, pair->key, key)) {
 	*value = (void *)pair->value;
+	mapSearchHit ++;
 	return (void *)pair->key;
     } else {
 	unsigned	index2 = index;
 	while ((index2 = nextIndex(table, index2)) != index) {
+	    mapSearchLoop ++;
 	    pair = pairs + index2;
 	    if (pair->key == NX_MAPNOTAKEY) return NX_MAPNOTAKEY;
 	    if (isEqual(table, pair->key, key)) {
@@ -192,16 +204,19 @@ void *NXMapGet(NXMapTable *table, const void *key) {
     return (_NXMapMember(table, key, &value) != NX_MAPNOTAKEY) ? value : NULL;
 }
 
+static int mapRehash = 0;
+static int mapRehashSum = 0;
+
 static void _NXMapRehash(NXMapTable *table) {
     MapPair	*pairs = table->buckets;
     MapPair	*pair = pairs;
-    unsigned	numBuckets = table->nbBucketsMinusOne + 1;
-    unsigned	index = numBuckets;
+    unsigned	index = table->nbBuckets;
     unsigned	oldCount = table->count;
-    
-    table->nbBucketsMinusOne = 2 * numBuckets - 1;
+    table->nbBuckets += table->nbBuckets + 1; /* 2 times + 1 */
     table->count = 0; 
-    table->buckets = allocBuckets(malloc_zone_from_ptr(table), table->nbBucketsMinusOne + 1);
+    table->buckets = allocBuckets(malloc_zone_from_ptr(table), table->nbBuckets);
+    mapRehash ++;
+    mapRehashSum += table->count;
     while (index--) {
 	if (pair->key != NX_MAPNOTAKEY) {
 	    (void)NXMapInsert(table, pair->key, pair->value);
@@ -209,44 +224,60 @@ static void _NXMapRehash(NXMapTable *table) {
 	pair++;
     }
     if (oldCount != table->count)
-	_objc_inform("*** maptable: count differs after rehashing; probably indicates a broken invariant: there are x and y such as isEqual(x, y) is TRUE but hash(x) != hash (y)\n");
+	_NXLogError("*** maptable: count differs after rehashing; probably indicates a broken invariant: there are x and y such as isEqual(x, y) is TRUE but hash(x) != hash (y)\n");
     free(pairs); 
 }
+
+static int mapInsert = 0;
+static int mapInsertHit = 0;
+static int mapInsertLoop = 0;
 
 void *NXMapInsert(NXMapTable *table, const void *key, const void *value) {
     MapPair	*pairs = table->buckets;
     unsigned	index = bucketOf(table, key);
     MapPair	*pair = pairs + index;
     if (key == NX_MAPNOTAKEY) {
-	_objc_inform("*** NXMapInsert: invalid key: -1\n");
+	_NXLogError("*** NXMapInsert: invalid key: -1\n");
 	return NULL;
     }
-
-    unsigned numBuckets = table->nbBucketsMinusOne + 1;
-
+    mapInsert ++;
     if (pair->key == NX_MAPNOTAKEY) {
+	mapInsertHit ++;
 	pair->key = key; pair->value = value;
 	table->count++;
-	if (table->count * 4 > numBuckets * 3) _NXMapRehash(table);
 	return NULL;
     }
-    
     if (isEqual(table, pair->key, key)) {
 	const void	*old = pair->value;
+	mapInsertHit ++;
 	if (old != value) pair->value = value;/* avoid writing unless needed! */
 	return (void *)old;
-    } else if (table->count == numBuckets) {
+    } else if (table->count == table->nbBuckets) {
 	/* no room: rehash and retry */
 	_NXMapRehash(table);
 	return NXMapInsert(table, key, value);
     } else {
 	unsigned	index2 = index;
 	while ((index2 = nextIndex(table, index2)) != index) {
+	    mapInsertLoop ++;
 	    pair = pairs + index2;
 	    if (pair->key == NX_MAPNOTAKEY) {
+    #if INSERT_TAIL
               pair->key = key; pair->value = value;
+    #else
+              MapPair         current = {key, value};
+              index2 = index;
+              while (current.key != NX_MAPNOTAKEY) {
+                  MapPair             temp;
+                  pair = pairs + index2;
+                  temp = *pair;
+                  *pair = current;
+                  current = temp;
+                  index2 = nextIndex(table, index2);
+              }
+    #endif
 		table->count++;
-		if (table->count * 4 > numBuckets * 3) _NXMapRehash(table);
+		if (table->count * 4 > table->nbBuckets * 3) _NXMapRehash(table);
 		return NULL;
 	    }
 	    if (isEqual(table, pair->key, key)) {
@@ -256,7 +287,7 @@ void *NXMapInsert(NXMapTable *table, const void *key, const void *value) {
 	    }
 	}
 	/* no room: can't happen! */
-	_objc_inform("**** NXMapInsert: bug\n");
+	_NXLogError("**** NXMapInsert: bug\n");
 	return NULL;
     }
 }
@@ -284,7 +315,7 @@ void *NXMapRemove(NXMapTable *table, const void *key) {
 	}
     }
     if (! found) return NULL;
-    if (found != 1) _objc_inform("**** NXMapRemove: incorrect table\n");
+    if (found != 1) _NXLogError("**** NXMapRemove: incorrect table\n");
     /* remove then reinsert */
     {
 	MapPair	buffer[16];
@@ -299,7 +330,7 @@ void *NXMapRemove(NXMapTable *table, const void *key) {
 	    index2 = nextIndex(table, index2);
 	}
 	table->count -= chain;
-	if (auxnb != chain-1) _objc_inform("**** NXMapRemove: bug\n");
+	if (auxnb != chain-1) _NXLogError("**** NXMapRemove: bug\n");
 	while (auxnb--) NXMapInsert(table, aux[auxnb].key, aux[auxnb].value);
 	if (chain > 16) free(aux);
     }
@@ -308,7 +339,7 @@ void *NXMapRemove(NXMapTable *table, const void *key) {
 
 NXMapState NXInitMapState(NXMapTable *table) {
     NXMapState	state;
-    state.index = table->nbBucketsMinusOne + 1;
+    state.index = table->nbBuckets;
     return state;
 }
     
@@ -324,57 +355,10 @@ int NXNextMapState(NXMapTable *table, NXMapState *state, const void **key, const
     return NO;
 }
 
-
-/***********************************************************************
-* NXMapKeyCopyingInsert
-* Like NXMapInsert, but strdups the key if necessary.
-* Used to prevent stale pointers when bundles are unloaded.
-**********************************************************************/
-PRIVATE_EXTERN void *NXMapKeyCopyingInsert(NXMapTable *table, const void *key, const void *value)
-{
-    void *realKey; 
-    void *realValue = NULL;
-
-    if ((realKey = NXMapMember(table, key, &realValue)) != NX_MAPNOTAKEY) {
-        // key DOES exist in table - use table's key for insertion
-    } else {
-        // key DOES NOT exist in table - copy the new key before insertion
-        realKey = _strdup_internal(key);
-    }
-    return NXMapInsert(table, realKey, value);
-}
-
-
-/***********************************************************************
-* NXMapKeyFreeingRemove
-* Like NXMapRemove, but frees the existing key if necessary.
-* Used to prevent stale pointers when bundles are unloaded.
-**********************************************************************/
-PRIVATE_EXTERN void *NXMapKeyFreeingRemove(NXMapTable *table, const void *key)
-{
-    void *realKey;
-    void *realValue = NULL;
-
-    if ((realKey = NXMapMember(table, key, &realValue)) != NX_MAPNOTAKEY) {
-        // key DOES exist in table - remove pair and free key
-        realValue = NXMapRemove(table, realKey);
-        _free_internal(realKey); // the key from the table, not necessarily the one given
-        return realValue;
-    } else {
-        // key DOES NOT exist in table - nothing to do
-        return NULL;
-    }
-}
-
-
 /****		Conveniences		*************************************/
 
 static unsigned _mapPtrHash(NXMapTable *table, const void *key) {
-#ifdef __LP64__
-    return ((uintptr_t)key) >> 3;
-#else
-    return ((uintptr_t)key) >> 2;
-#endif
+    return (((uarith_t) key) >> ARITH_SHIFT) ^ ((uarith_t) key);
 }
     
 static unsigned _mapStrHash(NXMapTable *table, const void *key) {
@@ -392,7 +376,11 @@ static unsigned _mapStrHash(NXMapTable *table, const void *key) {
 	if (*s == '\0') break;
 	hash ^= *s++ << 24;
     }
-    return xorHash(hash);
+    return hash;
+}
+    
+static unsigned _mapObjectHash(NXMapTable *table, const void *key) {
+    return [(id)key hash];
 }
     
 static int _mapPtrIsEqual(NXMapTable *table, const void *key1, const void *key2) {
@@ -407,7 +395,15 @@ static int _mapStrIsEqual(NXMapTable *table, const void *key1, const void *key2)
     return (strcmp((char *) key1, (char *) key2)) ? NO : YES;
 }
     
+static int _mapObjectIsEqual(NXMapTable *table, const void *key1, const void *key2) {
+    return [(id)key1 isEqual:(id)key2];
+}
+    
 static void _mapNoFree(NXMapTable *table, void *key, void *value) {}
+
+static void _mapObjectFree(NXMapTable *table, void *key, void *value) {
+    [(id)key free];
+}
 
 const NXMapTablePrototype NXPtrValueMapPrototype = {
     _mapPtrHash, _mapPtrIsEqual, _mapNoFree, 0
@@ -417,36 +413,7 @@ const NXMapTablePrototype NXStrValueMapPrototype = {
     _mapStrHash, _mapStrIsEqual, _mapNoFree, 0
 };
 
-
-#if !__OBJC2__  &&  !TARGET_OS_WIN32
-
-/* This only works with class Object, which is unavailable. */
-
-/* Method prototypes */
-@interface DoesNotExist
-+ class;
-+ initialize;
-- (id)description;
-- (const char *)UTF8String;
-- (unsigned long)hash;
-- (BOOL)isEqual:(id)object;
-- free;
-@end
-
-static unsigned _mapObjectHash(NXMapTable *table, const void *key) {
-    return [(id)key hash];
-}
-    
-static int _mapObjectIsEqual(NXMapTable *table, const void *key1, const void *key2) {
-    return [(id)key1 isEqual:(id)key2];
-}
-
-static void _mapObjectFree(NXMapTable *table, void *key, void *value) {
-    [(id)key free];
-}
-
 const NXMapTablePrototype NXObjectMapPrototype = {
     _mapObjectHash, _mapObjectIsEqual, _mapObjectFree, 0
 };
 
-#endif

@@ -1,292 +1,122 @@
 /*
- * Copyright (c) 1999-2003, 2005-2007 Apple Inc.  All Rights Reserved.
- * 
+ * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * This file contains Original Code and/or Modifications of Original Code
- * as defined in and that are subject to the Apple Public Source License
- * Version 2.0 (the 'License'). You may not use this file except in
- * compliance with the License. Please obtain a copy of the License at
- * http://www.opensource.apple.com/apsl/ and read it before using this
- * file.
+ * Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
+ * Reserved.  This file contains Original Code and/or Modifications of
+ * Original Code as defined in and that are subject to the Apple Public
+ * Source License Version 1.1 (the "License").  You may not use this file
+ * except in compliance with the License.  Please obtain a copy of the
+ * License at http://www.apple.com/publicsource and read it before using
+ * this file.
  * 
  * The Original Code and all software distributed under the License are
- * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
- * Please see the License for the specific language governing rights and
- * limitations under the License.
+ * FITNESS FOR A PARTICULAR PURPOSE OR NON- INFRINGEMENT.  Please see the
+ * License for the specific language governing rights and limitations
+ * under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
 /*
  *	objc-errors.m
- * 	Copyright 1988-2001, NeXT Software, Inc., Apple Computer, Inc.
+ * 	Copyright 1988-1996, NeXT Software, Inc.
  */
-
-#include "objc-private.h"
-
-#if TARGET_OS_WIN32
-
-#include <conio.h>
-
-PRIVATE_EXTERN void _objc_inform_on_crash(const char *fmt, ...)
-{
-}
-
-PRIVATE_EXTERN void _objc_inform(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    _vcprintf(fmt, args);
-    va_end(args);
-    _cprintf("\n");
-}
-
-PRIVATE_EXTERN void _objc_fatal(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    _vcprintf(fmt, args);
-    va_end(args);
-    _cprintf("\n");
-
-    abort();
-}
-
-PRIVATE_EXTERN void __objc_error(id rcv, const char *fmt, ...) 
-{
-    va_list args;
-    va_start(args, fmt);
-    _vcprintf(fmt, args);
-    va_end(args);
-
-    abort();
-}
-
-PRIVATE_EXTERN void _objc_error(id rcv, const char *fmt, va_list args) 
-{
-    _vcprintf(fmt, args);
-
-    abort();
-}
-
-#else
-
-
-OBJC_EXPORT void	(*_error)(id, const char *, va_list);
-
-static void _objc_trap(void) __attribute__((noreturn));
-
-// Add "message" to any forthcoming crash log.
-static void _objc_crashlog(const char *message)
-{
-    char *newmsg;
-
-#if 0
-    {
-        // for debugging at BOOT time.
-        extern char **_NSGetProgname(void);
-        FILE *crashlog = fopen("/_objc_crash.log", "a");
-        setbuf(crashlog, NULL);
-        fprintf(crashlog, "[%s] %s\n", *_NSGetProgname(), message);
-        fclose(crashlog);
-        sync();
-    }
-#endif
-
-    static mutex_t crashlog_lock = MUTEX_INITIALIZER;
-    mutex_lock(&crashlog_lock);
-
-    char *oldmsg = (char *)CRGetCrashLogMessage();
-
-    if (!oldmsg) {
-        newmsg = strdup(message);
-    } else {
-        asprintf(&newmsg, "%s\n%s", oldmsg, message);
-    }
-
-    if (newmsg) {
-        // Strip trailing newline
-        char *c = &newmsg[strlen(newmsg)-1];
-        if (*c == '\n') *c = '\0';
-        
-        if (oldmsg) free(oldmsg);
-        CRSetCrashLogMessage(newmsg);
-    }
-
-    mutex_unlock(&crashlog_lock);
-}
-
-// Print "message" to the console.
-static void _objc_syslog(const char *message)
-{
-    if (fcntl(STDERR_FILENO, F_GETFL, 0) != -1) {
-        // stderr is open - use it
-        write(STDERR_FILENO, message, strlen(message));
-        if (message[strlen(message)-1] != '\n') {
-            write(STDERR_FILENO, "\n", 1);
-        }
-    } else {
-        syslog(LOG_ERR, "%s", message);
-    }
-}
 
 /*
- * _objc_error is the default *_error handler.
- */
-#if __OBJC2__
-PRIVATE_EXTERN __attribute__((noreturn))
-#else
-// used by ExceptionHandling.framework
+	NXLogObjcError was snarfed from "logErrorInc.c" in the kit.
+  
+	Contains code for writing error messages to stderr or syslog.
+  
+	This code is included in errors.m in the kit, and in pbs.c
+	so pbs can use it also.
+*/
+
+#if defined(WIN32)
+    #import <winnt-pdo.h>
+    #import <windows.h>
+    #import <sys/types.h>
+    #import <sys/stat.h>
+    #import <io.h>
+    #define syslog(a, b, c) 	fprintf(stderr, b, c)
+#else 
+    #import <syslog.h>
 #endif
-void _objc_error(id self, const char *fmt, va_list ap) 
+
+    #if defined(NeXT_PDO)
+        #if !defined(WIN32)
+            #include	<syslog.h>	// major head banging in attempt to find syslog
+            #import 	<stdarg.h>
+            #include 	<unistd.h>	// close
+        #endif
+        #import 	<fcntl.h>	// file open flags
+    #endif
+
+#import "objc-private.h"
+
+/*	
+ *	this routine handles errors that involve an object (or class).
+ */
+volatile void __objc_error(id rcv, const char *fmt, ...) 
 { 
-    char *buf1;
-    char *buf2;
+	va_list vp; 
 
-    vasprintf(&buf1, fmt, ap);
-    asprintf(&buf2, "objc[%d]: %s: %s\n", 
-             getpid(), object_getClassName(self), buf1);
-    _objc_syslog(buf2);
-    _objc_crashlog(buf2);
-
-    _objc_trap();
+	va_start(vp,fmt); 
+	(*_error)(rcv, fmt, vp); 
+	va_end(vp);
+	_objc_error (rcv, fmt, vp);	/* In case (*_error)() returns. */
 }
 
 /*
- * this routine handles errors that involve an object (or class).
+ * 	this routine is never called directly...it is only called indirectly
+ * 	through "_error", which can be overriden by an application. It is
+ *	not declared static because it needs to be referenced in 
+ *	"objc-globaldata.m" (this file organization simplifies the shlib
+ *	maintenance problem...oh well). It is, however, a "private extern".
  */
-PRIVATE_EXTERN void __objc_error(id rcv, const char *fmt, ...) 
+volatile void _objc_error(id self, const char *fmt, va_list ap) 
 { 
-    va_list vp; 
+    char bigBuffer[4*1024];
 
-    va_start(vp,fmt); 
-#if !__OBJC2__
-    (*_error)(rcv, fmt, vp); 
+    vsprintf (bigBuffer, fmt, ap);
+    _NXLogError ("objc: %s: %s", object_getClassName (self), bigBuffer);
+
+#if defined(WIN32)
+    RaiseException(0xdead, EXCEPTION_NONCONTINUABLE, 0, NULL);
+#else
+    abort();		/* generates a core file */
 #endif
-    _objc_error (rcv, fmt, vp);  /* In case (*_error)() returns. */
-    va_end(vp);
+}
+
+/*	
+ *	this routine handles severe runtime errors...like not being able
+ * 	to read the mach headers, allocate space, etc...very uncommon.
+ */
+volatile void _objc_fatal(const char *msg)
+{
+    _NXLogError("objc: %s\n", msg);
+#if defined(WIN32)
+    RaiseException(0xdead, EXCEPTION_NONCONTINUABLE, 0, NULL);
+#else
+    exit(1);
+#endif
 }
 
 /*
- * this routine handles severe runtime errors...like not being able
- * to read the mach headers, allocate space, etc...very uncommon.
+ *	this routine handles soft runtime errors...like not being able
+ *      add a category to a class (because it wasn't linked in).
  */
-PRIVATE_EXTERN void _objc_fatal(const char *fmt, ...)
+void _objc_inform(const char *fmt, ...)
 {
     va_list ap; 
-    char *buf1;
-    char *buf2;
-
-    va_start(ap,fmt); 
-    vasprintf(&buf1, fmt, ap);
-    va_end (ap);
-
-    asprintf(&buf2, "objc[%d]: %s\n", getpid(), buf1);
-    _objc_syslog(buf2);
-    _objc_crashlog(buf2);
-
-    _objc_trap();
-}
-
-/*
- * this routine handles soft runtime errors...like not being able
- * add a category to a class (because it wasn't linked in).
- */
-PRIVATE_EXTERN void _objc_inform(const char *fmt, ...)
-{
-    va_list ap; 
-    char *buf1;
-    char *buf2;
+    char bigBuffer[4*1024];
 
     va_start (ap,fmt); 
-    vasprintf(&buf1, fmt, ap);
+    vsprintf (bigBuffer, fmt, ap);
+    _NXLogError ("objc: %s", bigBuffer);
     va_end (ap);
-
-    asprintf(&buf2, "objc[%d]: %s\n", getpid(), buf1);
-    _objc_syslog(buf2);
-
-    free(buf2);
-    free(buf1);
 }
 
-
-/* 
- * Like _objc_inform(), but prints the message only in any 
- * forthcoming crash log, not to the console.
- */
-PRIVATE_EXTERN void _objc_inform_on_crash(const char *fmt, ...)
-{
-    va_list ap; 
-    char *buf1;
-    char *buf2;
-
-    va_start (ap,fmt); 
-    vasprintf(&buf1, fmt, ap);
-    va_end (ap);
-
-    asprintf(&buf2, "objc[%d]: %s\n", getpid(), buf1);
-    _objc_crashlog(buf2);
-
-    free(buf2);
-    free(buf1);
-}
-
-
-/* 
- * Like calling both _objc_inform and _objc_inform_on_crash.
- */
-PRIVATE_EXTERN void _objc_inform_now_and_on_crash(const char *fmt, ...)
-{
-    va_list ap; 
-    char *buf1;
-    char *buf2;
-
-    va_start (ap,fmt); 
-    vasprintf(&buf1, fmt, ap);
-    va_end (ap);
-
-    asprintf(&buf2, "objc[%d]: %s\n", getpid(), buf1);
-    _objc_crashlog(buf2);
-    _objc_syslog(buf2);
-
-    free(buf2);
-    free(buf1);
-}
-
-
-/* Kill the process in a way that generates a crash log. 
- * This is better than calling exit(). */
-static void _objc_trap(void) 
-{
-    __builtin_trap();
-}
-
-/* Try to keep _objc_warn_deprecated out of crash logs 
- * caused by _objc_trap(). rdar://4546883 */
-__attribute__((used))
-static void _objc_trap2(void)
-{
-    __builtin_trap();
-}
-
-#endif
-
-
-BREAKPOINT_FUNCTION( 
-    void _objc_warn_deprecated(void)
-);
-
-PRIVATE_EXTERN void _objc_inform_deprecated(const char *oldf, const char *newf)
-{
-    if (PrintDeprecation) {
-        if (newf) {
-            _objc_inform("The function %s is obsolete. Use %s instead. Set a breakpoint on _objc_warn_deprecated to find the culprit.", oldf, newf);
-        } else {
-            _objc_inform("The function %s is obsolete. Do not use it. Set a breakpoint on _objc_warn_deprecated to find the culprit.", oldf);
-        }
-    }
-    _objc_warn_deprecated();
-}
