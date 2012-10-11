@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 1999-2007 Apple Inc.  All Rights Reserved.
+ * Copyright (c) 1999-2009 Apple Inc.  All Rights Reserved.
  * 
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -28,20 +28,8 @@
 
 #if !__OBJC2__
 
-#define OLD 1
-#import "objc-private.h"
-#import "objc-rtp.h"
-#import "hashtable2.h"
-#import "maptable.h"
-
-#include <sys/param.h>
-#include <assert.h>
-
-// Lock for method list access and modification.
-// Protects methodLists fields, method arrays, and CLS_NO_METHOD_ARRAY bits.
-// Classes not yet in use do not need to take this lock.
-__private_extern__ OBJC_DECLARE_LOCK(methodListLock);
-
+#include "objc-private.h"
+#include "objc-runtime-old.h"
 
 // Freed objects have their isa set to point to this dummy class.
 // This avoids the need to check for Nil classes in the messenger.
@@ -56,21 +44,9 @@ static const struct old_class freedObjectClass =
     NULL,				// ivars
     NULL,				// methodLists
     (Cache) &_objc_empty_cache,		// cache
-    NULL				// protocols
-};
-
-static const struct old_class nonexistentObjectClass =
-{
-    Nil,				// isa
-    Nil,				// super_class
-    "NONEXISTENT(id)",		// name
-    0,				// version
-    0,				// info
-    0,				// instance_size
-    NULL,				// ivars
-    NULL,				// methodLists
-    (Cache) &_objc_empty_cache,		// cache
-    NULL				// protocols
+    NULL,				// protocols
+    NULL,			// ivar_layout;
+    NULL			// ext
 };
 
 
@@ -80,21 +56,9 @@ static const struct old_class nonexistentObjectClass =
 * a pointer to the freedObjectClass, so that we can catch usages of
 * the freed object.
 **********************************************************************/
-__private_extern__ Class _class_getFreedObjectClass(void)
+static Class _class_getFreedObjectClass(void)
 {
     return (Class)&freedObjectClass;
-}
-
-
-/***********************************************************************
-* _class_getNonexistentClass.  Return a pointer to the dummy nonexistent
-* object class.  This is used when, for example, mapping the class
-* refs for an image, and the class can not be found, so that we can
-* catch later uses of the non-existent class.
-**********************************************************************/
-__private_extern__ Class _class_getNonexistentObjectClass(void)
-{
-    return (Class)&nonexistentObjectClass;
 }
 
 
@@ -127,15 +91,37 @@ static void allocateExt(struct old_class *cls)
 static inline struct old_method *_findNamedMethodInList(struct old_method_list * mlist, const char *meth_name) {
     int i;
     if (!mlist) return NULL;
+    if (ignoreSelectorNamed(meth_name)) return NULL;
     for (i = 0; i < mlist->method_count; i++) {
         struct old_method *m = &mlist->method_list[i];
-        if (*((const char *)m->method_name) == *meth_name && 0 == strcmp((const char *)(m->method_name), meth_name)) {
+        if (0 == strcmp((const char *)(m->method_name), meth_name)) {
             return m;
         }
     }
     return NULL;
 }
 
+
+/***********************************************************************
+* Method list fixup markers.
+* mlist->obsolete == fixed_up_method_list marks method lists with real SELs 
+*   versus method lists with un-uniqued char*.
+* PREOPTIMIZED VERSION:
+*   Fixed-up method lists get mlist->obsolete == OBJC_FIXED_UP 
+*   dyld shared cache sets this for method lists it preoptimizes.
+* UN-PREOPTIMIZED VERSION
+*   Fixed-up method lists get mlist->obsolete == OBJC_FIXED_UP_outside_dyld
+*   dyld shared cache uses OBJC_FIXED_UP, but those aren't trusted.
+**********************************************************************/
+#define OBJC_FIXED_UP ((void *)1771)
+#define OBJC_FIXED_UP_outside_dyld ((void *)1773)
+static void *fixed_up_method_list = OBJC_FIXED_UP;
+
+// sel_init() decided that selectors in the dyld shared cache are untrustworthy
+void disableSharedCacheOptimizations(void)
+{
+    fixed_up_method_list = OBJC_FIXED_UP_outside_dyld;
+}
 
 /***********************************************************************
 * fixupSelectorsInMethodList
@@ -158,7 +144,9 @@ static struct old_method_list *fixupSelectorsInMethodList(struct old_class *cls,
     struct old_method_list *old_mlist; 
     
     if ( ! mlist ) return NULL;
-    if ( mlist->obsolete != _OBJC_FIXED_UP ) {
+    if ( mlist->obsolete == fixed_up_method_list ) {
+        // method list OK
+    } else {
         BOOL isBundle = (cls->info & CLS_FROM_BUNDLE) ? YES : NO;
         if (!isBundle) {
             old_mlist = mlist;
@@ -175,12 +163,12 @@ static struct old_method_list *fixupSelectorsInMethodList(struct old_class *cls,
             method->method_name =
                 sel_registerNameNoLock((const char *)method->method_name, isBundle);  // Always copy selector data from bundles.
 
-            if (method->method_name == (SEL)kRTAddress_ignoredSelector) {
+            if (ignoreSelector(method->method_name)) {
                 method->method_imp = (IMP)&_objc_ignored_method;
             }
         }
         sel_unlock();
-        mlist->obsolete = _OBJC_FIXED_UP;
+        mlist->obsolete = fixed_up_method_list;
     }
     return mlist;
 }
@@ -201,11 +189,11 @@ static struct old_method_list *fixupSelectorsInMethodList(struct old_class *cls,
 *
 * void *iterator = NULL;
 * struct old_method_list *mlist;
-* OBJC_LOCK(&methodListLock);
+* mutex_lock(&methodListLock);
 * while ((mlist = nextMethodList(cls, &iterator))) {
 *     // do something with mlist
 * }
-* OBJC_UNLOCK(&methodListLock);
+* mutex_unlock(&methodListLock);
 **********************************************************************/
 static struct old_method_list *nextMethodList(struct old_class *cls,
                                                void **it)
@@ -243,7 +231,7 @@ static struct old_method_list *nextMethodList(struct old_class *cls,
     // OR the address of the method list pointer to fix up and return.
     
     if (resultp) {
-        if (*resultp  &&  (*resultp)->obsolete != _OBJC_FIXED_UP) {
+        if (*resultp) {
             *resultp = fixupSelectorsInMethodList(cls, *resultp);
         }
         *it = (void *)(index + 1);
@@ -288,9 +276,7 @@ static inline struct old_method * _findMethodInClass(struct old_class *cls, SEL 
         // One method list.
         struct old_method_list **mlistp;
         mlistp = (struct old_method_list **)&cls->methodLists;
-        if ((*mlistp)->obsolete != _OBJC_FIXED_UP) {
-            *mlistp = fixupSelectorsInMethodList(cls, *mlistp);
-        }
+        *mlistp = fixupSelectorsInMethodList(cls, *mlistp);
         return _findMethodInList(*mlistp, sel);
     }
     else {
@@ -301,9 +287,7 @@ static inline struct old_method * _findMethodInClass(struct old_class *cls, SEL 
              mlistp++) 
         {
             struct old_method *m;
-            if ((*mlistp)->obsolete != _OBJC_FIXED_UP) {
-                *mlistp = fixupSelectorsInMethodList(cls, *mlistp);
-            }
+            *mlistp = fixupSelectorsInMethodList(cls, *mlistp);
             m = _findMethodInList(*mlistp, sel);
             if (m) return m;
         }
@@ -322,7 +306,7 @@ static inline struct old_method * _getMethod(struct old_class *cls, SEL sel) {
 
 
 // fixme for gc debugging temporary use
-__private_extern__ IMP findIMPInClass(struct old_class *cls, SEL sel)
+IMP findIMPInClass(struct old_class *cls, SEL sel)
 {
     struct old_method *m = _findMethodInClass(cls, sel);
     if (m) return m->method_imp;
@@ -330,14 +314,54 @@ __private_extern__ IMP findIMPInClass(struct old_class *cls, SEL sel)
 }
 
 
+/***********************************************************************
+* _freedHandler.
+**********************************************************************/
+static void _freedHandler(id obj, SEL sel)
+{
+    __objc_error (obj, "message %s sent to freed object=%p", 
+                  sel_getName(sel), obj);
+}
+
+
+/***********************************************************************
+* ABI-specific lookUpMethod helpers.
+**********************************************************************/
+void lockForMethodLookup(void)
+{
+    mutex_lock(&methodListLock);
+}
+void unlockForMethodLookup(void)
+{
+    mutex_unlock(&methodListLock);
+}
+IMP prepareForMethodLookup(Class cls, SEL sel, BOOL init, id obj)
+{
+    mutex_assert_unlocked(&methodListLock);
+
+    // Check for freed class
+    if (cls == _class_getFreedObjectClass())
+        return (IMP) _freedHandler;
+
+    if (init  &&  !_class_isInitialized(cls)) {
+        _class_initialize (_class_getNonMetaClass(cls, obj));
+        // If sel == initialize, _class_initialize will send +initialize and 
+        // then the messenger will send +initialize again after this 
+        // procedure finishes. Of course, if this is not being called 
+        // from the messenger then it won't happen. 2778172
+    }
+    
+    return NULL;
+}
+
 
 /***********************************************************************
 * class_getVariable.  Return the named instance variable.
 **********************************************************************/
-__private_extern__ 
-Ivar _class_getVariable(Class cls_gen, const char *name)
+
+Ivar _class_getVariable(Class cls_gen, const char *name, Class *memberOf)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
 
     for (; cls != Nil; cls = cls->super_class) {
         int i;
@@ -351,6 +375,7 @@ Ivar _class_getVariable(Class cls_gen, const char *name)
             // (e.g. for anonymous bit fields).
             struct old_ivar *ivar = &cls->ivars->ivar_list[i];
             if (ivar->ivar_name  &&  0 == strcmp(name, ivar->ivar_name)) {
+                if (memberOf) *memberOf = (Class)cls;
                 return (Ivar)ivar;
             }
         }
@@ -361,16 +386,43 @@ Ivar _class_getVariable(Class cls_gen, const char *name)
 }
 
 
-/***********************************************************************
-* class_getPropertyList. Return the class's property list
-* Locking: classLock must be held by the caller
-**********************************************************************/
-static struct objc_property_list *
+struct old_property * 
+property_list_nth(const struct old_property_list *plist, uint32_t i)
+{
+    return (struct old_property *)(i*plist->entsize + (char *)&plist->first);
+}
+
+struct old_property **
+copyPropertyList(struct old_property_list *plist, unsigned int *outCount)
+{
+    struct old_property **result = NULL;
+    unsigned int count = 0;
+
+    if (plist) {
+        count = plist->count;
+    }
+
+    if (count > 0) {
+        unsigned int i;
+        result = malloc((count+1) * sizeof(struct old_property *));
+        
+        for (i = 0; i < count; i++) {
+            result[i] = property_list_nth(plist, i);
+        }
+        result[i] = NULL;
+    }
+
+    if (outCount) *outCount = count;
+    return result;
+}
+
+
+static struct old_property_list *
 nextPropertyList(struct old_class *cls, uintptr_t *indexp)
 {
-    struct objc_property_list *result = NULL;
+    struct old_property_list *result = NULL;
 
-    OBJC_CHECK_LOCKED(&classLock);
+    mutex_assert_locked(&classLock);
     if (! ((cls->info & CLS_EXT)  &&  cls->ext)) {
         // No class ext
         result = NULL;
@@ -380,7 +432,7 @@ nextPropertyList(struct old_class *cls, uintptr_t *indexp)
     } else if (cls->info & CLS_NO_PROPERTY_ARRAY) {
         // Only one property list
         if (*indexp == 0) {
-            result = (struct objc_property_list *)cls->ext->propertyLists;
+            result = (struct old_property_list *)cls->ext->propertyLists;
         } else {
             result = NULL;
         }
@@ -403,10 +455,10 @@ nextPropertyList(struct old_class *cls, uintptr_t *indexp)
 * class_getIvarLayout
 * NULL means all-scanned. "" means non-scanned.
 **********************************************************************/
-const char *
+const uint8_t *
 class_getIvarLayout(Class cls_gen)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
     if (cls  &&  (cls->info & CLS_EXT)) {
         return cls->ivar_layout;
     } else {
@@ -419,10 +471,10 @@ class_getIvarLayout(Class cls_gen)
 * class_getWeakIvarLayout
 * NULL means no weak ivars.
 **********************************************************************/
-const char *
+const uint8_t *
 class_getWeakIvarLayout(Class cls_gen)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
     if (cls  &&  (cls->info & CLS_EXT)  &&  cls->ext) {
         return cls->ext->weak_ivar_layout;
     } else {
@@ -435,9 +487,9 @@ class_getWeakIvarLayout(Class cls_gen)
 * class_setIvarLayout
 * NULL means all-scanned. "" means non-scanned.
 **********************************************************************/
-void class_setIvarLayout(Class cls_gen, const char *layout)
+void class_setIvarLayout(Class cls_gen, const uint8_t *layout)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
     if (!cls) return;
 
     if (! (cls->info & CLS_EXT)) {
@@ -446,27 +498,56 @@ void class_setIvarLayout(Class cls_gen, const char *layout)
     } 
 
     // fixme leak
-    cls->ivar_layout = layout ? _strdup_internal(layout) : NULL;
+    cls->ivar_layout = _ustrdup_internal(layout);
 }
 
+// SPI:  Instance-specific object layout.
+
+void _class_setIvarLayoutAccessor(Class cls_gen, const uint8_t* (*accessor) (id object)) {
+    struct old_class *cls = oldcls(cls_gen);
+    if (!cls) return;
+
+    if (! (cls->info & CLS_EXT)) {
+        _objc_inform("class '%s' needs to be recompiled", cls->name);
+        return;
+    } 
+
+    // fixme leak
+    cls->ivar_layout = (const uint8_t *)accessor;
+    _class_setInfo(cls_gen, CLS_HAS_INSTANCE_SPECIFIC_LAYOUT);
+}
+
+const uint8_t *_object_getIvarLayout(Class cls_gen, id object) {
+    struct old_class *cls = oldcls(cls_gen);
+    if (cls && (cls->info & CLS_EXT)) {
+        const uint8_t* layout = cls->ivar_layout;
+        if (cls->info & CLS_HAS_INSTANCE_SPECIFIC_LAYOUT) {
+            const uint8_t* (*accessor) (id object) = (const uint8_t* (*)(id))layout;
+            layout = accessor(object);
+        }
+        return layout;
+    } else {
+        return NULL;
+    }
+}
 
 /***********************************************************************
 * class_setWeakIvarLayout
 * NULL means no weak ivars.
 **********************************************************************/
-void class_setWeakIvarLayout(Class cls_gen, const char *layout)
+void class_setWeakIvarLayout(Class cls_gen, const uint8_t *layout)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
     if (!cls) return;
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     allocateExt(cls);
     
     // fixme leak
-    cls->ext->weak_ivar_layout = layout ? _strdup_internal(layout) : NULL;
+    cls->ext->weak_ivar_layout = _ustrdup_internal(layout);
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 }
 
 
@@ -475,9 +556,9 @@ void class_setWeakIvarLayout(Class cls_gen, const char *layout)
 * Atomically sets and clears some bits in cls's info field.
 * set and clear must not overlap.
 **********************************************************************/
-__private_extern__ void _class_changeInfo(Class cls, long set, long clear)
+void _class_changeInfo(Class cls, long set, long clear)
 {
-    struct old_class *old = _class_asOld(cls);
+    struct old_class *old = oldcls(cls);
     long newinfo;
     long oldinfo;
     do {
@@ -491,9 +572,9 @@ __private_extern__ void _class_changeInfo(Class cls, long set, long clear)
 * _class_getInfo
 * Returns YES iff all set bits in get are also set in cls's info field.
 **********************************************************************/
-__private_extern__ BOOL _class_getInfo(Class cls, int get)
+BOOL _class_getInfo(Class cls, int get)
 {
-    struct old_class *old = _class_asOld(cls);
+    struct old_class *old = oldcls(cls);
     return ((old->info & get) == get) ? YES : NO;
 }
 
@@ -502,7 +583,7 @@ __private_extern__ BOOL _class_getInfo(Class cls, int get)
 * _class_setInfo
 * Atomically sets some bits in cls's info field.
 **********************************************************************/
-__private_extern__ void _class_setInfo(Class cls, long set)
+void _class_setInfo(Class cls, long set)
 {
     _class_changeInfo(cls, set, 0);
 }
@@ -512,7 +593,7 @@ __private_extern__ void _class_setInfo(Class cls, long set)
 * _class_clearInfo
 * Atomically clears some bits in cls's info field.
 **********************************************************************/
-__private_extern__ void _class_clearInfo(Class cls, long clear)
+void _class_clearInfo(Class cls, long clear)
 {
     _class_changeInfo(cls, 0, clear);
 }
@@ -523,7 +604,7 @@ __private_extern__ void _class_clearInfo(Class cls, long clear)
 * Return YES if cls is currently being initialized.
 * The initializing bit is stored in the metaclass only.
 **********************************************************************/
-__private_extern__ BOOL _class_isInitializing(Class cls)
+BOOL _class_isInitializing(Class cls)
 {
     return _class_getInfo(_class_getMeta(cls), CLS_INITIALIZING);
 }
@@ -534,7 +615,7 @@ __private_extern__ BOOL _class_isInitializing(Class cls)
 * Return YES if cls is already initialized.
 * The initialized bit is stored in the metaclass only.
 **********************************************************************/
-__private_extern__ BOOL _class_isInitialized(Class cls)
+BOOL _class_isInitialized(Class cls)
 {
     return _class_getInfo(_class_getMeta(cls), CLS_INITIALIZED);
 }
@@ -544,7 +625,7 @@ __private_extern__ BOOL _class_isInitialized(Class cls)
 * setInitializing
 * Mark cls as initialization in progress.
 **********************************************************************/
-__private_extern__ void _class_setInitializing(Class cls)
+void _class_setInitializing(Class cls)
 {
     _class_setInfo(_class_getMeta(cls), CLS_INITIALIZING);
 }
@@ -554,7 +635,7 @@ __private_extern__ void _class_setInitializing(Class cls)
 * setInitialized
 * Atomically mark cls as initialized and not initializing.
 **********************************************************************/
-__private_extern__ void _class_setInitialized(Class cls)
+void _class_setInitialized(Class cls)
 {
     _class_changeInfo(_class_getMeta(cls), CLS_INITIALIZED, CLS_INITIALIZING);
 }
@@ -579,13 +660,13 @@ int class_getVersion(Class cls)
 }
 
 
-__private_extern__ Class _class_getMeta(Class cls)
+Class _class_getMeta(Class cls)
 {
     if (_class_getInfo(cls, CLS_META)) return cls;
     else return ((id)cls)->isa;
 }
 
-__private_extern__ BOOL _class_isMetaClass(Class cls)
+BOOL _class_isMetaClass(Class cls)
 {
     if (!cls) return NO;
     return _class_getInfo(cls, CLS_META);
@@ -597,17 +678,17 @@ __private_extern__ BOOL _class_isMetaClass(Class cls)
 * Return the ordinary class for this class or metaclass. 
 * Used by +initialize. 
 **********************************************************************/
-__private_extern__ Class _class_getNonMetaClass(Class cls)
+Class _class_getNonMetaClass(Class cls, id obj __unused)
 {
     // fixme ick
     if (_class_isMetaClass(cls)) {
         if (strncmp(_class_getName(cls), "_%", 2) == 0) {
             // Posee's meta's name is smashed and isn't in the class_hash, 
             // so objc_getClass doesn't work.
-            char *baseName = strchr(_class_getName(cls), '%'); // get posee's real name
-            cls = objc_getClass(baseName);
+            const char *baseName = strchr(_class_getName(cls), '%'); // get posee's real name
+            cls = (Class)objc_getClass(baseName);
         } else {
-            cls = objc_getClass(_class_getName(cls));
+            cls = (Class)objc_getClass(_class_getName(cls));
         }
         assert(cls);
     }
@@ -616,30 +697,30 @@ __private_extern__ Class _class_getNonMetaClass(Class cls)
 }
 
 
-__private_extern__ Class _class_getSuperclass(Class cls)
+Class _class_getSuperclass(Class cls)
 {
     if (!cls) return nil;
     return (Class)cls->super_class;
 }
 
 
-__private_extern__ Cache _class_getCache(Class cls)
+Cache _class_getCache(Class cls)
 {
     return cls->cache;
 }
 
-__private_extern__ void _class_setCache(Class cls, Cache cache)
+void _class_setCache(Class cls, Cache cache)
 {
     cls->cache = cache;
 }
 
-__private_extern__ size_t _class_getInstanceSize(Class cls)
+size_t _class_getInstanceSize(Class cls)
 {
     if (!cls) return 0;
-    return cls->instance_size;
+    return (cls->instance_size + WORD_MASK) & ~WORD_MASK;
 }
 
-__private_extern__ const char * _class_getName(Class cls)
+const char * _class_getName(Class cls)
 {
     if (!cls) return "nil";
     return cls->name;
@@ -647,24 +728,24 @@ __private_extern__ const char * _class_getName(Class cls)
 
 
 
-__private_extern__ const char *_category_getName(Category cat)
+const char *_category_getName(Category cat)
 {
-    return _category_asOld(cat)->category_name;
+    return oldcategory(cat)->category_name;
 }
 
-__private_extern__ const char *_category_getClassName(Category cat)
+const char *_category_getClassName(Category cat)
 {
-    return _category_asOld(cat)->class_name;
+    return oldcategory(cat)->class_name;
 }
 
-__private_extern__ Class _category_getClass(Category cat)
+Class _category_getClass(Category cat)
 {
-    return objc_getClass(_category_asOld(cat)->class_name);
+    return (Class)objc_getClass(oldcategory(cat)->class_name);
 }
 
-__private_extern__ IMP _category_getLoadMethod(Category cat)
+IMP _category_getLoadMethod(Category cat)
 {
-    struct old_method_list *mlist = _category_asOld(cat)->class_methods;
+    struct old_method_list *mlist = oldcategory(cat)->class_methods;
     if (mlist) {
         return lookupNamedMethodInMethodList(mlist, "load");
     } else {
@@ -693,9 +774,9 @@ OBJC_EXPORT struct objc_method_list *class_nextMethodList(Class cls, void **it)
 
     OBJC_WARN_DEPRECATED;
 
-    OBJC_LOCK(&methodListLock);
-    result = nextMethodList(_class_asOld(cls), it);
-    OBJC_UNLOCK(&methodListLock);
+    mutex_lock(&methodListLock);
+    result = nextMethodList(oldcls(cls), it);
+    mutex_unlock(&methodListLock);
     return (struct objc_method_list *)result;
 }
 
@@ -710,9 +791,9 @@ OBJC_EXPORT void class_addMethods(Class cls, struct objc_method_list *meths)
     OBJC_WARN_DEPRECATED;
 
     // Add the methods.
-    OBJC_LOCK(&methodListLock);
-    _objc_insertMethods(_class_asOld(cls), (struct old_method_list *)meths, NULL);
-    OBJC_UNLOCK(&methodListLock);
+    mutex_lock(&methodListLock);
+    _objc_insertMethods(oldcls(cls), (struct old_method_list *)meths, NULL);
+    mutex_unlock(&methodListLock);
 
     // Must flush when dynamically adding methods.  No need to flush
     // all the class method caches.  If cls is a meta class, though,
@@ -729,9 +810,9 @@ OBJC_EXPORT void class_removeMethods(Class cls, struct objc_method_list *meths)
     OBJC_WARN_DEPRECATED;
 
     // Remove the methods
-    OBJC_LOCK(&methodListLock);
-    _objc_removeMethods(_class_asOld(cls), (struct old_method_list *)meths);
-    OBJC_UNLOCK(&methodListLock);
+    mutex_lock(&methodListLock);
+    _objc_removeMethods(oldcls(cls), (struct old_method_list *)meths);
+    mutex_unlock(&methodListLock);
 
     // Must flush when dynamically removing methods.  No need to flush
     // all the class method caches.  If cls is a meta class, though,
@@ -745,33 +826,39 @@ OBJC_EXPORT void class_removeMethods(Class cls, struct objc_method_list *meths)
 * without fixing up the entire method list.
 * The class is not yet in use, so methodListLock is not taken.
 **********************************************************************/
-__private_extern__ IMP lookupNamedMethodInMethodList(struct old_method_list *mlist, const char *meth_name)
+IMP lookupNamedMethodInMethodList(struct old_method_list *mlist, const char *meth_name)
 {
     struct old_method *m;
     m = meth_name ? _findNamedMethodInList(mlist, meth_name) : NULL;
     return (m ? m->method_imp : NULL);
 }
 
-__private_extern__ Method _class_getMethod(Class cls, SEL sel)
+Method _class_getMethod(Class cls, SEL sel)
 {
     Method result;
     
-    OBJC_LOCK(&methodListLock);
-    result = (Method)_getMethod(_class_asOld(cls), sel);
-    OBJC_UNLOCK(&methodListLock);
+    mutex_lock(&methodListLock);
+    result = (Method)_getMethod(oldcls(cls), sel);
+    mutex_unlock(&methodListLock);
 
     return result;
 }
 
-__private_extern__ Method _class_getMethodNoSuper(Class cls, SEL sel)
+Method _class_getMethodNoSuper(Class cls, SEL sel)
 {
     Method result;
 
-    OBJC_LOCK(&methodListLock);
-    result = (Method)_findMethodInClass(_class_asOld(cls), sel);
-    OBJC_UNLOCK(&methodListLock);
+    mutex_lock(&methodListLock);
+    result = (Method)_findMethodInClass(oldcls(cls), sel);
+    mutex_unlock(&methodListLock);
 
     return result;
+}
+
+Method _class_getMethodNoSuper_nolock(Class cls, SEL sel)
+{
+    mutex_assert_locked(&methodListLock);
+    return (Method)_findMethodInClass(oldcls(cls), sel);
 }
 
 
@@ -779,6 +866,9 @@ BOOL class_conformsToProtocol(Class cls_gen, Protocol *proto_gen)
 {
     struct old_class *cls = oldcls(cls_gen);
     struct old_protocol *proto = oldprotocol(proto_gen);
+    
+    if (!cls_gen) return NO;
+    if (!proto) return NO;
 
     if (cls->isa->version >= 3) {
         struct old_protocol_list *list;
@@ -800,21 +890,21 @@ static NXMapTable *	posed_class_hash = NULL;
 /***********************************************************************
 * objc_getOrigClass.
 **********************************************************************/
-__private_extern__ Class _objc_getOrigClass(const char *name)
+Class _objc_getOrigClass(const char *name)
 {
     Class ret;
 
     // Look for class among the posers
     ret = Nil;
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
     if (posed_class_hash)
         ret = (Class) NXMapGet (posed_class_hash, name);
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
     if (ret)
         return ret;
 
     // Not a poser.  Do a normal lookup.
-    ret = objc_getClass (name);
+    ret = (Class)objc_getClass (name);
     if (!ret)
         _objc_inform ("class `%s' not linked into application", name);
 
@@ -835,7 +925,7 @@ Class objc_getOrigClass(const char *name)
 **********************************************************************/
 static void	_objc_addOrigClass	   (struct old_class *origClass)
 {
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     // Create the poser's hash table on first use
     if (!posed_class_hash)
@@ -849,7 +939,7 @@ static void	_objc_addOrigClass	   (struct old_class *origClass)
     if (NXMapGet (posed_class_hash, origClass->name) == 0)
         NXMapInsert (posed_class_hash, origClass->name, origClass);
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 }
 
 
@@ -861,7 +951,6 @@ static void	_objc_addOrigClass	   (struct old_class *origClass)
 * Used by class_poseAs and objc_setFutureClass
 * classLock must be locked.
 **********************************************************************/
-__private_extern__
 void change_class_references(struct old_class *imposter, 
                              struct old_class *original, 
                              struct old_class *copy, 
@@ -892,7 +981,7 @@ void change_class_references(struct old_class *imposter,
 
     // Replace the original with the imposter in all class refs
     // Major loop - process all headers
-    for (hInfo = _objc_headerStart(); hInfo != NULL; hInfo = hInfo->next)
+    for (hInfo = FirstHeader; hInfo != NULL; hInfo = hInfo->next)
     {
         struct old_class **cls_refs;
         size_t	refCount;
@@ -918,8 +1007,8 @@ void change_class_references(struct old_class *imposter,
 **********************************************************************/
 Class class_poseAs(Class imposter_gen, Class original_gen)
 {
-    struct old_class *imposter = _class_asOld(imposter_gen);
-    struct old_class *original = _class_asOld(original_gen);
+    struct old_class *imposter = oldcls(imposter_gen);
+    struct old_class *original = oldcls(original_gen);
     char *			imposterNamePtr;
     struct old_class * 			copy;
 
@@ -931,24 +1020,28 @@ Class class_poseAs(Class imposter_gen, Class original_gen)
 
     // Imposter must be an immediate subclass of the original
     if (imposter->super_class != original) {
-        __objc_error(imposter_gen, 
+        __objc_error((id)imposter_gen, 
                      "[%s poseAs:%s]: target not immediate superclass", 
                      imposter->name, original->name);
     }
 
     // Can't pose when you have instance variables (how could it work?)
     if (imposter->ivars) {
-        __objc_error(imposter_gen, 
+        __objc_error((id)imposter_gen, 
                      "[%s poseAs:%s]: %s defines new instance variables", 
                      imposter->name, original->name, imposter->name);
     }
 
     // Build a string to use to replace the name of the original class.
-    #define imposterNamePrefix "_%"
+#if TARGET_OS_WIN32
+#   define imposterNamePrefix "_%"
     imposterNamePtr = _malloc_internal(strlen(original->name) + strlen(imposterNamePrefix) + 1);
     strcpy(imposterNamePtr, imposterNamePrefix);
     strcat(imposterNamePtr, original->name);
-    #undef imposterNamePrefix
+#   undef imposterNamePrefix
+#else
+    asprintf(&imposterNamePtr, "_%%%s", original->name);
+#endif
 
     // We lock the class hashtable, so we are thread safe with respect to
     // calls to objc_getClass ().  However, the class names are not
@@ -965,16 +1058,17 @@ Class class_poseAs(Class imposter_gen, Class original_gen)
     // its normal life in addition to changing the behavior of
     // the original.  As a hack we don't bother to copy the metaclass.
     // For some reason we modify the original rather than the copy.
-    copy = _class_asOld((*_zoneAlloc)((Class)imposter->isa, sizeof(struct old_class), _objc_internal_zone()));
+    copy = (struct old_class *)_malloc_internal(sizeof(struct old_class));
     memmove(copy, imposter, sizeof(struct old_class));
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     // Remove both the imposter and the original class.
     NXHashRemove (class_hash, imposter);
     NXHashRemove (class_hash, original);
 
     NXHashInsert (class_hash, copy);
+    objc_addRegisteredClass((Class)copy);  // imposter & original will rejoin later, just track the new guy
 
     // Mark the imposter as such
     _class_setInfo((Class)imposter, CLS_POSING);
@@ -1000,7 +1094,7 @@ Class class_poseAs(Class imposter_gen, Class original_gen)
     NXHashInsert (class_hash, imposter);
     NXHashInsert (class_hash, original);
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
     return imposter_gen;
 }
@@ -1012,18 +1106,18 @@ Class class_poseAs(Class imposter_gen, Class original_gen)
 *
 * Specifying Nil for the class "all classes."
 **********************************************************************/
-__private_extern__ void flush_caches(Class target_gen, BOOL flush_meta)
+void flush_caches(Class target_gen, BOOL flush_meta)
 {
     NXHashState state;
-    struct old_class *target = _class_asOld(target_gen);
+    struct old_class *target = oldcls(target_gen);
     struct old_class *clsObject;
 #ifdef OBJC_INSTRUMENTED
     unsigned int classesVisited;
     unsigned int subclassCount;
 #endif
 
-    OBJC_LOCK(&classLock);
-    OBJC_LOCK(&cacheUpdateLock);
+    mutex_lock(&classLock);
+    mutex_lock(&cacheUpdateLock);
 
     // Leaf classes are fastest because there are no subclass caches to flush.
     // fixme instrument
@@ -1031,13 +1125,13 @@ __private_extern__ void flush_caches(Class target_gen, BOOL flush_meta)
         _cache_flush ((Class)target);
         
         if (!flush_meta) {
-            OBJC_UNLOCK(&cacheUpdateLock);
-            OBJC_UNLOCK(&classLock);
+            mutex_unlock(&cacheUpdateLock);
+            mutex_unlock(&classLock);
             return;  // done
         } else if (target->isa  &&  (target->isa->info & CLS_LEAF)) {
             _cache_flush ((Class)target->isa);
-            OBJC_UNLOCK(&cacheUpdateLock);
-            OBJC_UNLOCK(&classLock);
+            mutex_unlock(&cacheUpdateLock);
+            mutex_unlock(&classLock);
             return;  // done
         } else {
             // Reset target and handle it by one of the methods below.
@@ -1094,8 +1188,8 @@ __private_extern__ void flush_caches(Class target_gen, BOOL flush_meta)
             MaxIdealFlushCachesCount = subclassCount;
 #endif
 
-        OBJC_UNLOCK(&cacheUpdateLock);
-        OBJC_UNLOCK(&classLock);
+        mutex_unlock(&cacheUpdateLock);
+        mutex_unlock(&classLock);
         return;
     }
 
@@ -1173,8 +1267,8 @@ __private_extern__ void flush_caches(Class target_gen, BOOL flush_meta)
         MaxIdealFlushCachesCount = subclassCount;
 #endif
 
-    OBJC_UNLOCK(&cacheUpdateLock);
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&cacheUpdateLock);
+    mutex_unlock(&classLock);
 }
 
 
@@ -1183,14 +1277,14 @@ __private_extern__ void flush_caches(Class target_gen, BOOL flush_meta)
 * CLS_FLUSH_CACHE (and all subclasses thereof)
 * fixme instrument
 **********************************************************************/
-__private_extern__ void flush_marked_caches(void)
+void flush_marked_caches(void)
 {
     struct old_class *cls;
     struct old_class *supercls;
     NXHashState state;
 
-    OBJC_LOCK(&classLock);
-    OBJC_LOCK(&cacheUpdateLock);
+    mutex_lock(&classLock);
+    mutex_lock(&cacheUpdateLock);
 
     state = NXInitHashState(class_hash);
     while (NXNextHashState(class_hash, &state, (void**)&cls)) {
@@ -1219,8 +1313,8 @@ __private_extern__ void flush_marked_caches(void)
         }
     }
 
-    OBJC_UNLOCK(&cacheUpdateLock);
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&cacheUpdateLock);
+    mutex_unlock(&classLock);
 }
 
 
@@ -1257,7 +1351,7 @@ static IMP _class_getLoadMethod_nocheck(struct old_class *cls)
 }
 
 
-__private_extern__ BOOL _class_hasLoadMethod(Class cls)
+BOOL _class_hasLoadMethod(Class cls)
 {
     if (oldcls(cls)->isa->info & CLS_HAS_LOAD_METHOD) return YES;
     return (_class_getLoadMethod_nocheck(oldcls(cls)) ? YES : NO);
@@ -1268,9 +1362,9 @@ __private_extern__ BOOL _class_hasLoadMethod(Class cls)
 * _class_getLoadMethod
 * Returns cls's +load implementation, or NULL if it doesn't have one.
 **********************************************************************/
-__private_extern__ IMP _class_getLoadMethod(Class cls_gen)
+IMP _class_getLoadMethod(Class cls_gen)
 {
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_class *cls = oldcls(cls_gen);
     if (cls->isa->info & CLS_HAS_LOAD_METHOD) {
         return _class_getLoadMethod_nocheck(cls);
     }
@@ -1278,75 +1372,143 @@ __private_extern__ IMP _class_getLoadMethod(Class cls_gen)
 }
 
 
-__private_extern__ BOOL _class_shouldGrowCache(Class cls)
+BOOL _class_shouldGrowCache(Class cls)
 {
     return _class_getInfo(cls, CLS_GROW_CACHE);
 }
 
-__private_extern__ void _class_setGrowCache(Class cls, BOOL grow)
+void _class_setGrowCache(Class cls, BOOL grow)
 {
     if (grow) _class_setInfo(cls, CLS_GROW_CACHE);
     else _class_clearInfo(cls, CLS_GROW_CACHE);
 }
 
-__private_extern__ BOOL _class_hasCxxStructorsNoSuper(Class cls)
+BOOL _class_hasCxxStructors(Class cls)
 {
+    // this DOES check superclasses too, because set_superclass 
+    // propagates the flag from the superclass.
     return _class_getInfo(cls, CLS_HAS_CXX_STRUCTORS);
 }
 
-__private_extern__ BOOL _class_shouldFinalizeOnMainThread(Class cls) {
+BOOL _class_shouldFinalizeOnMainThread(Class cls) {
     return _class_getInfo(cls, CLS_FINALIZE_ON_MAIN_THREAD);
 }
 
-__private_extern__ void _class_setFinalizeOnMainThread(Class cls) {
+void _class_setFinalizeOnMainThread(Class cls) {
     _class_setInfo(cls, CLS_FINALIZE_ON_MAIN_THREAD);
 }
 
+BOOL _class_instancesHaveAssociatedObjects(Class cls) {
+    return _class_getInfo(cls, CLS_INSTANCES_HAVE_ASSOCIATED_OBJECTS);
+}
 
-__private_extern__ struct old_ivar *_ivar_asOld(Ivar ivar) 
+void _class_setInstancesHaveAssociatedObjects(Class cls) {
+    _class_setInfo(cls, CLS_INSTANCES_HAVE_ASSOCIATED_OBJECTS);
+}
+
+BOOL _class_usesAutomaticRetainRelease(Class cls)
 {
-    return (struct old_ivar *)ivar;
+    return NO;
+}
+
+uint32_t _class_getInstanceStart(Class cls)
+{
+    _objc_fatal("_class_getInstanceStart() unimplemented for fragile instance variables");
+    return 0;   // PCB:  never used just provided for ARR consistency.
 }
 
 ptrdiff_t ivar_getOffset(Ivar ivar)
 {
-    return _ivar_asOld(ivar)->ivar_offset;
+    return oldivar(ivar)->ivar_offset;
 }
 
 const char *ivar_getName(Ivar ivar)
 {
-    return _ivar_asOld(ivar)->ivar_name;
+    return oldivar(ivar)->ivar_name;
 }
 
 const char *ivar_getTypeEncoding(Ivar ivar)
 {
-    return _ivar_asOld(ivar)->ivar_type;
+    return oldivar(ivar)->ivar_type;
 }
 
 
 IMP method_getImplementation(Method m)
 {
     if (!m) return NULL;
-    return _method_asOld(m)->method_imp;
+    return oldmethod(m)->method_imp;
 }
 
 SEL method_getName(Method m)
 {
     if (!m) return NULL;
-    return _method_asOld(m)->method_name;
+    return oldmethod(m)->method_name;
 }
 
 const char *method_getTypeEncoding(Method m)
 {
     if (!m) return NULL;
-    return _method_asOld(m)->method_types;
+    return oldmethod(m)->method_types;
 }
 
-IMP method_setImplementation(Method m, IMP imp)
+unsigned int method_getSizeOfArguments(Method m)
 {
-    IMP old = _method_asOld(m)->method_imp;
-    _method_asOld(m)->method_imp = imp;
+    OBJC_WARN_DEPRECATED;
+    if (!m) return 0;
+    return encoding_getSizeOfArguments(method_getTypeEncoding(m));
+}
+
+unsigned int method_getArgumentInfo(Method m, int arg,
+                                    const char **type, int *offset)
+{
+    OBJC_WARN_DEPRECATED;
+    if (!m) return 0;
+    return encoding_getArgumentInfo(method_getTypeEncoding(m), 
+                                    arg, type, offset);
+}
+
+
+static OSSpinLock impLock = OS_SPINLOCK_INIT;
+
+IMP method_setImplementation(Method m_gen, IMP imp)
+{
+    IMP old;
+    struct old_method *m = oldmethod(m_gen);
+    if (!m) return NULL;
+    if (!imp) return NULL;
+    
+    if (ignoreSelector(m->method_name)) {
+        // Ignored methods stay ignored
+        return m->method_imp;
+    }
+
+    OSSpinLockLock(&impLock);
+    old = m->method_imp;
+    m->method_imp = imp;
+    OSSpinLockUnlock(&impLock);
     return old;
+}
+
+
+void method_exchangeImplementations(Method m1_gen, Method m2_gen)
+{
+    IMP m1_imp;
+    struct old_method *m1 = oldmethod(m1_gen);
+    struct old_method *m2 = oldmethod(m2_gen);
+    if (!m1  ||  !m2) return;
+
+    if (ignoreSelector(m1->method_name)  ||  ignoreSelector(m2->method_name)) {
+        // Ignored methods stay ignored. Now they're both ignored.
+        m1->method_imp = (IMP)&_objc_ignored_method;
+        m2->method_imp = (IMP)&_objc_ignored_method;
+        return;
+    }
+
+    OSSpinLockLock(&impLock);
+    m1_imp = m1->method_imp;
+    m1->method_imp = m2->method_imp;
+    m2->method_imp = m1_imp;
+    OSSpinLockUnlock(&impLock);
 }
 
 
@@ -1357,6 +1519,43 @@ struct objc_method_description * method_getDescription(Method m)
 }
 
 
+const char *property_getName(objc_property_t prop)
+{
+    return oldproperty(prop)->name;
+}
+
+const char *property_getAttributes(objc_property_t prop)
+{
+    return oldproperty(prop)->attributes;
+}
+
+objc_property_attribute_t *property_copyAttributeList(objc_property_t prop, 
+                                                      unsigned int *outCount)
+{
+    if (!prop) {
+        if (outCount) *outCount = 0;
+        return NULL;
+    }
+
+    objc_property_attribute_t *result;
+    mutex_lock(&classLock);
+    result = copyPropertyAttributeList(oldproperty(prop)->attributes,outCount);
+    mutex_unlock(&classLock);
+    return result;
+}
+
+char * property_copyAttributeValue(objc_property_t prop, const char *name)
+{
+    if (!prop  ||  !name  ||  *name == '\0') return NULL;
+    
+    char *result;
+    mutex_lock(&classLock);
+    result = copyPropertyAttributeValue(oldproperty(prop)->attributes, name);
+    mutex_unlock(&classLock);
+    return result;    
+}
+
+
 /***********************************************************************
 * class_addMethod
 **********************************************************************/
@@ -1364,13 +1563,13 @@ static IMP _class_addMethod(Class cls_gen, SEL name, IMP imp,
                             const char *types, BOOL replace)
 {
     struct old_class *cls = oldcls(cls_gen);
+    struct old_method *m;
     IMP result = NULL;
 
     if (!types) types = "";
 
-    OBJC_LOCK(&methodListLock);
+    mutex_lock(&methodListLock);
 
-    struct old_method *m;
     if ((m = _findMethodInClass(cls, name))) {
         // already exists
         // fixme atomic
@@ -1382,11 +1581,15 @@ static IMP _class_addMethod(Class cls_gen, SEL name, IMP imp,
         // fixme could be faster
         struct old_method_list *mlist = 
             _calloc_internal(sizeof(struct old_method_list), 1);
-        mlist->obsolete = _OBJC_FIXED_UP;
+        mlist->obsolete = fixed_up_method_list;
         mlist->method_count = 1;
         mlist->method_list[0].method_name = name;
-        mlist->method_list[0].method_imp = imp;
         mlist->method_list[0].method_types = _strdup_internal(types);
+        if (!ignoreSelector(name)) {
+            mlist->method_list[0].method_imp = imp;
+        } else {
+            mlist->method_list[0].method_imp = (IMP)&_objc_ignored_method;
+        }
         
         _objc_insertMethods(cls, mlist, NULL);
         if (!(cls->info & CLS_CONSTRUCTING)) {
@@ -1398,7 +1601,7 @@ static IMP _class_addMethod(Class cls_gen, SEL name, IMP imp,
         result = NULL;
     }
 
-    OBJC_UNLOCK(&methodListLock);
+    mutex_unlock(&methodListLock);
 
     return result;
 }
@@ -1409,9 +1612,10 @@ static IMP _class_addMethod(Class cls_gen, SEL name, IMP imp,
 **********************************************************************/
 BOOL class_addMethod(Class cls, SEL name, IMP imp, const char *types)
 {
+    IMP old;
     if (!cls) return NO;
 
-    IMP old = _class_addMethod(cls, name, imp, types, NO);
+    old = _class_addMethod(cls, name, imp, types, NO);
     return old ? NO : YES;
 }
 
@@ -1443,7 +1647,7 @@ BOOL class_addIvar(Class cls_gen, const char *name, size_t size,
     if (!type) type = "";
     if (name  &&  0 == strcmp(name, "")) name = NULL;
     
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     // Check for existing ivar with this name
     // fixme check superclasses?
@@ -1488,14 +1692,14 @@ BOOL class_addIvar(Class cls_gen, const char *name, size_t size,
         // align if necessary
         alignBytes = 1 << alignment;
         misalign = cls->instance_size % alignBytes;
-        if (misalign) cls->instance_size += alignBytes - misalign;
+        if (misalign) cls->instance_size += (long)(alignBytes - misalign);
 
         // set ivar offset and increase instance size
         ivar->ivar_offset = (int)cls->instance_size;
-        cls->instance_size += size;
+        cls->instance_size += (long)size;
     }
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
     return result;
 }
@@ -1513,7 +1717,7 @@ BOOL class_addProtocol(Class cls_gen, Protocol *protocol_gen)
     if (!cls) return NO;
     if (class_conformsToProtocol(cls_gen, protocol_gen)) return NO;
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     // fixme optimize - protocol list doesn't escape?
     plist = _calloc_internal(sizeof(struct old_protocol_list), 1);
@@ -1524,51 +1728,54 @@ BOOL class_addProtocol(Class cls_gen, Protocol *protocol_gen)
 
     // fixme metaclass?
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
     return YES;
 }
 
 
 /***********************************************************************
-* class_addProperty
+* _class_addProperties
+* Internal helper to add properties to a class. 
+* Used by category attachment and  class_addProperty() 
+* Locking: acquires classLock
 **********************************************************************/
-__private_extern__ void 
+BOOL 
 _class_addProperties(struct old_class *cls,
-                     struct objc_property_list *additions)
+                     struct old_property_list *additions)
 {
-    if (!(cls->info & CLS_EXT)) {
-        return;
-    }
+    struct old_property_list *newlist;
 
-    struct objc_property_list *newlist = 
+    if (!(cls->info & CLS_EXT)) return NO;
+
+    newlist = 
         _memdup_internal(additions, sizeof(*newlist) - sizeof(newlist->first) 
                          + (additions->entsize * additions->count));
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     allocateExt(cls);
     if (!cls->ext->propertyLists) {
         // cls has no properties - simply use this list
-        cls->ext->propertyLists = (struct objc_property_list **)newlist;
+        cls->ext->propertyLists = (struct old_property_list **)newlist;
         _class_setInfo((Class)cls, CLS_NO_PROPERTY_ARRAY);
     } 
     else if (cls->info & CLS_NO_PROPERTY_ARRAY) {
         // cls has one property list - make a new array
-        struct objc_property_list **newarray = 
+        struct old_property_list **newarray = 
             _malloc_internal(3 * sizeof(*newarray));
         newarray[0] = newlist;
-        newarray[1] = (struct objc_property_list *)cls->ext->propertyLists;
+        newarray[1] = (struct old_property_list *)cls->ext->propertyLists;
         newarray[2] = NULL;
         cls->ext->propertyLists = newarray;
         _class_clearInfo((Class)cls, CLS_NO_PROPERTY_ARRAY);
     }
     else {
         // cls has a property array - make a bigger one
+        struct old_property_list **newarray;
         int count = 0;
         while (cls->ext->propertyLists[count]) count++;
-        struct objc_property_list **newarray = 
-            _malloc_internal((count+2) * sizeof(*newarray));
+        newarray = _malloc_internal((count+2) * sizeof(*newarray));
         newarray[0] = newlist;
         memcpy(&newarray[1], &cls->ext->propertyLists[0], 
                count * sizeof(*newarray));
@@ -1577,7 +1784,64 @@ _class_addProperties(struct old_class *cls,
         cls->ext->propertyLists = newarray;
     }
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
+
+    return YES;
+}
+
+
+/***********************************************************************
+* class_addProperty
+* Adds a property to a class. Returns NO if the proeprty already exists.
+* Locking: acquires classLock
+**********************************************************************/
+static BOOL 
+_class_addProperty(Class cls_gen, const char *name, 
+                   const objc_property_attribute_t *attrs, unsigned int count, 
+                   BOOL replace)
+{
+    struct old_class *cls = oldcls(cls_gen);
+    
+    if (!cls) return NO;
+    if (!name) return NO;
+
+    struct old_property *prop = oldproperty(class_getProperty(cls_gen, name));
+    if (prop  &&  !replace) {
+        // already exists, refuse to replace
+        return NO;
+    } 
+    else if (prop) {
+        // replace existing
+        mutex_lock(&classLock);
+        try_free(prop->attributes);
+        prop->attributes = copyPropertyAttributeString(attrs, count);
+        mutex_unlock(&classLock);
+        return YES;
+    } 
+    else {
+        // add new
+        struct old_property_list proplist;
+        proplist.entsize = sizeof(struct old_property);
+        proplist.count = 1;
+        proplist.first.name = _strdup_internal(name);
+        proplist.first.attributes = copyPropertyAttributeString(attrs, count);
+        
+        return _class_addProperties(cls, &proplist);
+    }
+}
+
+BOOL 
+class_addProperty(Class cls_gen, const char *name, 
+                  const objc_property_attribute_t *attrs, unsigned int n)
+{
+    return _class_addProperty(cls_gen, name, attrs, n, NO);
+}
+
+void 
+class_replaceProperty(Class cls_gen, const char *name, 
+                      const objc_property_attribute_t *attrs, unsigned int n)
+{
+    _class_addProperty(cls_gen, name, attrs, n, YES);
 }
 
 
@@ -1587,20 +1851,21 @@ _class_addProperties(struct old_class *cls,
 * implements no protocols. Caller must free the block.
 * Does not copy any superclass's protocols.
 **********************************************************************/
-Protocol **class_copyProtocolList(Class cls_gen, unsigned int *outCount)
+Protocol * __unsafe_unretained *
+class_copyProtocolList(Class cls_gen, unsigned int *outCount)
 {
     struct old_class *cls = oldcls(cls_gen);
     struct old_protocol_list *plist;
     Protocol **result = NULL;
     unsigned int count = 0;
-    unsigned int i, p;
+    unsigned int p;
 
     if (!cls) {
         if (outCount) *outCount = 0;
         return NULL;
     }
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     for (plist = cls->protocols; plist != NULL; plist = plist->next) {
         count += (int)plist->count;
@@ -1613,6 +1878,7 @@ Protocol **class_copyProtocolList(Class cls_gen, unsigned int *outCount)
              plist != NULL; 
              plist = plist->next) 
         {
+            int i;
             for (i = 0; i < plist->count; i++) {
                 result[p++] = (Protocol *)plist->list[i];
             }
@@ -1620,7 +1886,7 @@ Protocol **class_copyProtocolList(Class cls_gen, unsigned int *outCount)
         result[p] = NULL;
     }
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
     if (outCount) *outCount = count;
     return result;
@@ -1630,21 +1896,21 @@ Protocol **class_copyProtocolList(Class cls_gen, unsigned int *outCount)
 /***********************************************************************
 * class_getProperty.  Return the named property.
 **********************************************************************/
-Property class_getProperty(Class cls_gen, const char *name)
+objc_property_t class_getProperty(Class cls_gen, const char *name)
 {
-    Property result;
-    struct old_class *cls = _class_asOld(cls_gen);
+    struct old_property *result;
+    struct old_class *cls = oldcls(cls_gen);
     if (!cls  ||  !name) return NULL;
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     for (result = NULL; cls && !result; cls = cls->super_class) {
         uintptr_t iterator = 0;
-        struct objc_property_list *plist;
+        struct old_property_list *plist;
         while ((plist = nextPropertyList(cls, &iterator))) {
             uint32_t i;
             for (i = 0; i < plist->count; i++) {
-                Property p = property_list_nth(plist, i);
+                struct old_property *p = property_list_nth(plist, i);
                 if (0 == strcmp(name, p->name)) {
                     result = p;
                     goto done;
@@ -1654,9 +1920,9 @@ Property class_getProperty(Class cls_gen, const char *name)
     }
 
  done:
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
-    return result;
+    return (objc_property_t)result;
 }
 
 
@@ -1666,12 +1932,12 @@ Property class_getProperty(Class cls_gen, const char *name)
 * declares no properties. Caller must free the block.
 * Does not copy any superclass's properties.
 **********************************************************************/
-Property *class_copyPropertyList(Class cls_gen, unsigned int *outCount)
+objc_property_t *class_copyPropertyList(Class cls_gen, unsigned int *outCount)
 {
     struct old_class *cls = oldcls(cls_gen);
-    struct objc_property_list *plist;
+    struct old_property_list *plist;
     uintptr_t iterator = 0;
-    Property *result = NULL;
+    struct old_property **result = NULL;
     unsigned int count = 0;
     unsigned int p, i;
 
@@ -1680,7 +1946,7 @@ Property *class_copyPropertyList(Class cls_gen, unsigned int *outCount)
         return NULL;
     }
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     iterator = 0;
     while ((plist = nextPropertyList(cls, &iterator))) {
@@ -1688,7 +1954,7 @@ Property *class_copyPropertyList(Class cls_gen, unsigned int *outCount)
     }
 
     if (count > 0) {
-        result = malloc((count+1) * sizeof(Property));
+        result = malloc((count+1) * sizeof(struct old_property *));
         
         p = 0;
         iterator = 0;
@@ -1700,10 +1966,10 @@ Property *class_copyPropertyList(Class cls_gen, unsigned int *outCount)
         result[p] = NULL;
     }
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 
     if (outCount) *outCount = count;
-    return result;
+    return (objc_property_t *)result;
 }
 
 
@@ -1720,14 +1986,14 @@ Method *class_copyMethodList(Class cls_gen, unsigned int *outCount)
     void *iterator = NULL;
     Method *result = NULL;
     unsigned int count = 0;
-    unsigned int m, i;
+    unsigned int m;
 
     if (!cls) {
         if (outCount) *outCount = 0;
         return NULL;
     }
 
-    OBJC_LOCK(&methodListLock);
+    mutex_lock(&methodListLock);
 
     iterator = NULL;
     while ((mlist = nextMethodList(cls, &iterator))) {
@@ -1740,14 +2006,20 @@ Method *class_copyMethodList(Class cls_gen, unsigned int *outCount)
         m = 0;
         iterator = NULL;
         while ((mlist = nextMethodList(cls, &iterator))) {
+            int i;
             for (i = 0; i < mlist->method_count; i++) {
-                result[m++] = (Method)&mlist->method_list[i];
+                Method aMethod = (Method)&mlist->method_list[i];
+                if (ignoreSelector(method_getName(aMethod))) {
+                    count--;
+                    continue;
+                }
+                result[m++] = aMethod;
             }
         }
         result[m] = NULL;
     }
 
-    OBJC_UNLOCK(&methodListLock);
+    mutex_unlock(&methodListLock);
 
     if (outCount) *outCount = count;
     return result;
@@ -1765,7 +2037,7 @@ Ivar *class_copyIvarList(Class cls_gen, unsigned int *outCount)
     struct old_class *cls = oldcls(cls_gen);
     Ivar *result = NULL;
     unsigned int count = 0;
-    unsigned int i;
+    int i;
 
     if (!cls) {
         if (outCount) *outCount = 0;
@@ -1793,8 +2065,9 @@ Ivar *class_copyIvarList(Class cls_gen, unsigned int *outCount)
 /***********************************************************************
 * objc_allocateClass.
 **********************************************************************/
-__private_extern__ 
-void set_superclass(struct old_class *cls, struct old_class *supercls)
+
+void set_superclass(struct old_class *cls, struct old_class *supercls, 
+                    BOOL cls_is_new)
 {
     struct old_class *meta = cls->isa;
 
@@ -1802,6 +2075,12 @@ void set_superclass(struct old_class *cls, struct old_class *supercls)
         cls->super_class = supercls;
         meta->super_class = supercls->isa;
         meta->isa = supercls->isa->isa;
+
+        // Propagate C++ cdtors from superclass.
+        if (supercls->info & CLS_HAS_CXX_STRUCTORS) {
+            if (cls_is_new) cls->info |= CLS_HAS_CXX_STRUCTORS;
+            else _class_setInfo((Class)cls, CLS_HAS_CXX_STRUCTORS);
+        }
 
         // Superclass is no longer a leaf for cache flushing
         if (supercls->info & CLS_LEAF) {
@@ -1821,32 +2100,18 @@ void set_superclass(struct old_class *cls, struct old_class *supercls)
     }    
 }
 
-Class objc_allocateClassPair(Class superclass_gen, const char *name, 
-                             size_t extraBytes)
+// &UnsetLayout is the default ivar layout during class construction
+static const uint8_t UnsetLayout = 0;
+
+Class objc_initializeClassPair(Class superclass_gen, const char *name, Class cls_gen, Class meta_gen)
 {
-    struct old_class *superclass = oldcls(superclass_gen);
-    struct old_class *cls, *meta;
-
-    if (objc_getClass(name)) return NO;
-    // fixme reserve class name against simultaneous allocation
-
-    if (superclass  &&  (superclass->info & CLS_CONSTRUCTING)) {
-        // Can't make subclass of an in-construction class
-        return NO;
-    }
-
-    // Allocate new classes. 
-    if (superclass) {
-        cls = _calloc_internal(superclass->isa->instance_size + extraBytes, 1);
-        meta = _calloc_internal(superclass->isa->isa->instance_size + extraBytes, 1);
-    } else {
-        cls = _calloc_internal(sizeof(struct old_class) + extraBytes, 1);
-        meta = _calloc_internal(sizeof(struct old_class) + extraBytes, 1);
-    }
-
+    struct old_class *supercls = oldcls(superclass_gen);
+    struct old_class *cls = oldcls(cls_gen);
+    struct old_class *meta = oldcls(meta_gen);
+    
     // Connect to superclasses and metaclasses
     cls->isa = meta;
-    set_superclass(cls, superclass);
+    set_superclass(cls, supercls, YES);
 
     // Set basic info
     cls->name = _strdup_internal(name);
@@ -1857,27 +2122,59 @@ Class objc_allocateClassPair(Class superclass_gen, const char *name,
     meta->info = CLS_META | CLS_CONSTRUCTING | CLS_EXT | CLS_LEAF;
 
     // Set instance size based on superclass.
-    if (superclass) {
-        cls->instance_size = superclass->instance_size;
-        meta->instance_size = superclass->isa->instance_size;
+    if (supercls) {
+        cls->instance_size = supercls->instance_size;
+        meta->instance_size = supercls->isa->instance_size;
     } else {
         cls->instance_size = sizeof(struct old_class *);  // just an isa
         meta->instance_size = sizeof(struct old_class);
     }
     
-    // No ivars. No methods. Empty cache. No protocols. No layout. No ext.
+    // No ivars. No methods. Empty cache. No protocols. No layout. Empty ext.
     cls->ivars = NULL;
     cls->methodLists = NULL;
     cls->cache = (Cache)&_objc_empty_cache;
     cls->protocols = NULL;
+    cls->ivar_layout = &UnsetLayout;
     cls->ext = NULL;
+    allocateExt(cls);
+    cls->ext->weak_ivar_layout = &UnsetLayout;
 
     meta->ivars = NULL;
     meta->methodLists = NULL;
     meta->cache = (Cache)&_objc_empty_cache;
     meta->protocols = NULL;
-    cls->ext = NULL;
+    meta->ext = NULL;
+    
+    return cls_gen;
+}
 
+Class objc_allocateClassPair(Class superclass_gen, const char *name, 
+                             size_t extraBytes)
+{
+    struct old_class *supercls = oldcls(superclass_gen);
+    Class cls, meta;
+
+    if (objc_getClass(name)) return NO;
+    // fixme reserve class name against simultaneous allocation
+
+    if (supercls  &&  (supercls->info & CLS_CONSTRUCTING)) {
+        // Can't make subclass of an in-construction class
+        return NO;
+    }
+
+    // Allocate new classes. 
+    if (supercls) {
+        cls = _calloc_class(_class_getInstanceSize((Class)supercls->isa) + extraBytes);
+        meta = _calloc_class(_class_getInstanceSize((Class)supercls->isa->isa) + extraBytes);
+    } else {
+        cls = _calloc_class(sizeof(struct old_class) + extraBytes);
+        meta = _calloc_class(sizeof(struct old_class) + extraBytes);
+    }
+
+
+    objc_initializeClassPair(superclass_gen, name, cls, meta);
+    
     return (Class)cls;
 }
 
@@ -1908,27 +2205,27 @@ void objc_registerClassPair(Class cls_gen)
         return;
     }
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
 
     // Build ivar layouts
     if (UseGC) {
-        if (cls->ivar_layout) {
+        if (cls->ivar_layout != &UnsetLayout) {
             // Class builder already called class_setIvarLayout.
         }
         else if (!cls->super_class) {
             // Root class. Scan conservatively (should be isa ivar only).
-            // ivar_layout is already NULL.
+            cls->ivar_layout = NULL;
         }
         else if (cls->ivars == NULL) {
             // No local ivars. Use superclass's layout.
             cls->ivar_layout = 
-                _strdup_internal(cls->super_class->ivar_layout);
+                _ustrdup_internal(cls->super_class->ivar_layout);
         }
         else {
             // Has local ivars. Build layout based on superclass.
             struct old_class *supercls = cls->super_class;
-            unsigned char *superlayout = 
-                (unsigned char *) class_getIvarLayout((Class)supercls);
+            const uint8_t *superlayout = 
+                class_getIvarLayout((Class)supercls);
             layout_bitmap bitmap = 
                 layout_bitmap_create(superlayout, supercls->instance_size, 
                                      cls->instance_size, NO);
@@ -1937,34 +2234,36 @@ void objc_registerClassPair(Class cls_gen)
                 struct old_ivar *iv = &cls->ivars->ivar_list[i];
                 layout_bitmap_set_ivar(bitmap, iv->ivar_type, iv->ivar_offset);
             }
-            cls->ivar_layout = (char *)layout_string_create(bitmap);
+            cls->ivar_layout = layout_string_create(bitmap);
             layout_bitmap_free(bitmap);
         }
 
-        if (cls->ext  &&  cls->ext->weak_ivar_layout) {
+        if (cls->ext->weak_ivar_layout != &UnsetLayout) {
             // Class builder already called class_setWeakIvarLayout.
         }
         else if (!cls->super_class) {
             // Root class. No weak ivars (should be isa ivar only)
-            // weak_ivar_layout is already NULL.
+            cls->ext->weak_ivar_layout = NULL;
         }
         else if (cls->ivars == NULL) {
             // No local ivars. Use superclass's layout.
-            const char *weak = 
+            const uint8_t *weak = 
                 class_getWeakIvarLayout((Class)cls->super_class);
             if (weak) {
-                allocateExt(cls);
-                cls->ext->weak_ivar_layout = _strdup_internal(weak);
+                cls->ext->weak_ivar_layout = _ustrdup_internal(weak);
+            } else {
+                cls->ext->weak_ivar_layout = NULL;
             }
         }
         else {
             // Has local ivars. Build layout based on superclass.
             // No way to add weak ivars yet.
-            const char *weak = 
+            const uint8_t *weak = 
                 class_getWeakIvarLayout((Class)cls->super_class);
             if (weak) {
-                allocateExt(cls);
-                cls->ext->weak_ivar_layout = _strdup_internal(weak);
+                cls->ext->weak_ivar_layout = _ustrdup_internal(weak);
+            } else {
+                cls->ext->weak_ivar_layout = NULL;
             }
         }
     }
@@ -1976,8 +2275,10 @@ void objc_registerClassPair(Class cls_gen)
     cls->isa->info |= CLS_CONSTRUCTED;
 
     NXHashInsertIfAbsent(class_hash, cls);
+    objc_addRegisteredClass((Class)cls);
+    //objc_addRegisteredClass(cls->isa);  if we ever allocate classes from GC
 
-    OBJC_UNLOCK(&classLock);
+    mutex_unlock(&classLock);
 }
 
 
@@ -1991,7 +2292,7 @@ Class objc_duplicateClass(Class orig_gen, const char *name, size_t extraBytes)
     // instance_size has historically contained two extra words, 
     // and instance_size is what objc_getIndexedIvars() actually uses.
     struct old_class *duplicate = (struct old_class *)
-        calloc(original->isa->instance_size + extraBytes, 1);
+        _calloc_class(_class_getInstanceSize((Class)original->isa) + extraBytes);
 
     duplicate->isa = original->isa;
     duplicate->super_class = original->super_class;
@@ -2021,7 +2322,7 @@ Class objc_duplicateClass(Class orig_gen, const char *name, size_t extraBytes)
         duplicateMethods = (struct old_method_list *)
             calloc(sizeof(struct old_method_list) + 
                    (count-1)*sizeof(struct old_method), 1);
-        duplicateMethods->obsolete = _OBJC_FIXED_UP;
+        duplicateMethods->obsolete = fixed_up_method_list;
         duplicateMethods->method_count = count;
         for (i = 0; i < count; i++) {
             duplicateMethods->method_list[i] = *(originalMethods[i]);
@@ -2031,9 +2332,10 @@ Class objc_duplicateClass(Class orig_gen, const char *name, size_t extraBytes)
         free(originalMethods);
     }
 
-    OBJC_LOCK(&classLock);
+    mutex_lock(&classLock);
     NXHashInsert(class_hash, duplicate);
-    OBJC_UNLOCK(&classLock);
+    objc_addRegisteredClass((Class)duplicate);
+    mutex_unlock(&classLock);
 
     return (Class)duplicate;
 }
@@ -2059,24 +2361,72 @@ void objc_disposeClassPair(Class cls_gen)
         return;
     }
 
+    mutex_lock(&classLock);
     NXHashRemove(class_hash, cls);
+    objc_removeRegisteredClass((Class)cls);
     unload_class(cls->isa);
     unload_class(cls);
+    mutex_unlock(&classLock);
+}
+
+
+
+/***********************************************************************
+* _class_createInstanceFromZone.  Allocate an instance of the
+* specified class with the specified number of bytes for indexed
+* variables, in the specified zone.  The isa field is set to the
+* class, C++ default constructors are called, and all other fields are zeroed.
+**********************************************************************/
+id 
+_class_createInstanceFromZone(Class cls, size_t extraBytes, void *zone)
+{
+    id obj;
+    size_t size;
+
+    // Can't create something for nothing
+    if (!cls) return nil;
+
+    // Allocate and initialize
+    size = _class_getInstanceSize(cls) + extraBytes;
+
+    // CF requires all objects be at least 16 bytes.
+    if (size < 16) size = 16;
+
+#if SUPPORT_GC
+    if (UseGC) {
+        obj = (id)auto_zone_allocate_object(gc_zone, size,
+                                            AUTO_OBJECT_SCANNED, 0, 1);
+    } else 
+#endif
+    if (zone) {
+        obj = (id)malloc_zone_calloc (zone, 1, size);
+    } else {
+        obj = (id)calloc(1, size);
+    }
+    if (!obj) return nil;
+
+    obj->isa = cls;
+
+    if (_class_hasCxxStructors(cls)) {
+        obj = _objc_constructOrFree(cls, obj);
+    }
+
+    return obj;
 }
 
 
 /***********************************************************************
-* _internal_class_createInstance.  Allocate an instance of the specified
+* _class_createInstance.  Allocate an instance of the specified
 * class with the specified number of bytes for indexed variables, in
-* the default zone, using _internal_class_createInstanceFromZone.
+* the default zone, using _class_createInstanceFromZone.
 **********************************************************************/
-static id _internal_class_createInstance(Class cls, size_t extraBytes)
+static id _class_createInstance(Class cls, size_t extraBytes)
 {
-    return _internal_class_createInstanceFromZone (cls, extraBytes, NULL);
+    return _class_createInstanceFromZone (cls, extraBytes, NULL);
 }
 
 
-static id _internal_object_copyFromZone(id oldObj, size_t extraBytes, void *zone) 
+static id _object_copyFromZone(id oldObj, size_t extraBytes, void *zone) 
 {
     id obj;
     size_t size;
@@ -2085,19 +2435,74 @@ static id _internal_object_copyFromZone(id oldObj, size_t extraBytes, void *zone
 
     obj = (*_zoneAlloc)(oldObj->isa, extraBytes, zone);
     size = _class_getInstanceSize(oldObj->isa) + extraBytes;
+    
     // fixme need C++ copy constructor
-    bcopy((const char*)oldObj, (char*)obj, size);
+    objc_memmove_collectable(obj, oldObj, size);
+    
+#if SUPPORT_GC
+    if (UseGC) gc_fixup_weakreferences(obj, oldObj);
+#endif
+    
     return obj;
 }
 
-static id _internal_object_copy(id oldObj, size_t extraBytes) 
+
+/***********************************************************************
+* objc_destructInstance
+* Destroys an instance without freeing memory. 
+* Calls C++ destructors.
+* Removes associative references.
+* Returns `obj`. Does nothing if `obj` is nil.
+* Be warned that GC DOES NOT CALL THIS. If you edit this, also edit finalize.
+* CoreFoundation and other clients do call this under GC.
+**********************************************************************/
+void *objc_destructInstance(id obj) 
+{
+    if (obj) {
+        Class isa = _object_getClass(obj);
+
+        if (_class_hasCxxStructors(isa)) {
+            object_cxxDestruct(obj);
+        }
+
+        if (_class_instancesHaveAssociatedObjects(isa)) {
+            _object_remove_assocations(obj);
+        }
+
+        if (!UseGC) objc_clear_deallocating(obj);
+    }
+
+    return obj;
+}
+
+static id 
+_object_dispose(id anObject) 
+{
+    if (anObject==nil) return nil;
+
+    objc_destructInstance(anObject);
+    
+#if SUPPORT_GC
+    if (UseGC) {
+        auto_zone_retain(gc_zone, anObject); // gc free expects rc==1
+    } else 
+#endif
+    {
+        // only clobber isa for non-gc
+        anObject->isa = _objc_getFreedObjectClass (); 
+    }
+    free(anObject);
+    return nil;
+}
+
+static id _object_copy(id oldObj, size_t extraBytes) 
 {
     void *z = malloc_zone_from_ptr(oldObj);
-    return _internal_object_copyFromZone(oldObj, extraBytes,
+    return _object_copyFromZone(oldObj, extraBytes,
 					 z ? z : malloc_default_zone());
 }
 
-static id _internal_object_reallocFromZone(id anObject, size_t nBytes, 
+static id _object_reallocFromZone(id anObject, size_t nBytes, 
                                            void *zone) 
 {
     id newObject; 
@@ -2129,28 +2534,28 @@ static id _internal_object_reallocFromZone(id anObject, size_t nBytes,
 }
 
 
-static id _internal_object_realloc(id anObject, size_t nBytes) 
+static id _object_realloc(id anObject, size_t nBytes) 
 {
     void *z = malloc_zone_from_ptr(anObject);
-    return _internal_object_reallocFromZone(anObject,
+    return _object_reallocFromZone(anObject,
 					    nBytes,
 					    z ? z : malloc_default_zone());
 }
 
-id (*_alloc)(Class, size_t) = _internal_class_createInstance;
-id (*_copy)(id, size_t) = _internal_object_copy;
-id (*_realloc)(id, size_t) = _internal_object_realloc;
-id (*_dealloc)(id) = _internal_object_dispose;
-id (*_zoneAlloc)(Class, size_t, void *) = _internal_class_createInstanceFromZone;
-id (*_zoneCopy)(id, size_t, void *) = _internal_object_copyFromZone;
-id (*_zoneRealloc)(id, size_t, void *) = _internal_object_reallocFromZone;
-void (*_error)() = (void(*)())_objc_error;
+id (*_alloc)(Class, size_t) = _class_createInstance;
+id (*_copy)(id, size_t) = _object_copy;
+id (*_realloc)(id, size_t) = _object_realloc;
+id (*_dealloc)(id) = _object_dispose;
+id (*_zoneAlloc)(Class, size_t, void *) = _class_createInstanceFromZone;
+id (*_zoneCopy)(id, size_t, void *) = _object_copyFromZone;
+id (*_zoneRealloc)(id, size_t, void *) = _object_reallocFromZone;
+void (*_error)(id, const char *, va_list) = _objc_error;
 
 
 id class_createInstance(Class cls, size_t extraBytes)
 {
     if (UseGC) {
-        return _internal_class_createInstance(cls, extraBytes);
+        return _class_createInstance(cls, extraBytes);
     } else {
         return (*_alloc)(cls, extraBytes);
     }
@@ -2160,42 +2565,54 @@ id class_createInstanceFromZone(Class cls, size_t extraBytes, void *z)
 {
     OBJC_WARN_DEPRECATED;
     if (UseGC) {
-        return _internal_class_createInstanceFromZone(cls, extraBytes, z);
+        return _class_createInstanceFromZone(cls, extraBytes, z);
     } else {
         return (*_zoneAlloc)(cls, extraBytes, z);
     }
 }
 
+unsigned class_createInstances(Class cls, size_t extraBytes, 
+                               id *results, unsigned num_requested)
+{
+    if (UseGC  ||  _alloc == &_class_createInstance) {
+        return _class_createInstancesFromZone(cls, extraBytes, NULL, 
+                                              results, num_requested);
+    } else {
+        // _alloc in use, which isn't understood by the batch allocator
+        return 0;
+    }
+}
+
 id object_copy(id obj, size_t extraBytes) 
 {
-    if (UseGC) return _internal_object_copy(obj, extraBytes);
+    if (UseGC) return _object_copy(obj, extraBytes);
     else return (*_copy)(obj, extraBytes); 
 }
 
 id object_copyFromZone(id obj, size_t extraBytes, void *z) 
 {
     OBJC_WARN_DEPRECATED;
-    if (UseGC) return _internal_object_copyFromZone(obj, extraBytes, z);
+    if (UseGC) return _object_copyFromZone(obj, extraBytes, z);
     else return (*_zoneCopy)(obj, extraBytes, z); 
 }
 
 id object_dispose(id obj) 
 {
-    if (UseGC) return _internal_object_dispose(obj);
+    if (UseGC) return _object_dispose(obj);
     else return (*_dealloc)(obj); 
 }
 
 id object_realloc(id obj, size_t nBytes) 
 {
     OBJC_WARN_DEPRECATED;
-    if (UseGC) return _internal_object_realloc(obj, nBytes);
+    if (UseGC) return _object_realloc(obj, nBytes);
     else return (*_realloc)(obj, nBytes); 
 }
 
 id object_reallocFromZone(id obj, size_t nBytes, void *z) 
 {
     OBJC_WARN_DEPRECATED;
-    if (UseGC) return _internal_object_reallocFromZone(obj, nBytes, z);
+    if (UseGC) return _object_reallocFromZone(obj, nBytes, z);
     else return (*_zoneRealloc)(obj, nBytes, z); 
 }
 
@@ -2204,7 +2621,7 @@ id object_reallocFromZone(id obj, size_t nBytes, void *z)
 Class class_setSuperclass(Class cls, Class newSuper)
 {
     Class oldSuper = cls->super_class;
-    set_superclass(oldcls(cls), oldcls(newSuper));
+    set_superclass(oldcls(cls), oldcls(newSuper), NO);
     flush_caches(cls, YES);
     return oldSuper;
 }

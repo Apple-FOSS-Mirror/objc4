@@ -25,19 +25,38 @@
 #ifndef _OBJC_OBJC_API_H_
 #define _OBJC_OBJC_API_H_
 
+#include <Availability.h>
 #include <AvailabilityMacros.h>
+#include <TargetConditionals.h>
+
+#ifndef __has_feature
+#   define __has_feature(x) 0
+#endif
+
+#ifndef __has_extension
+#   define __has_extension __has_feature
+#endif
+
 
 /*
  * OBJC_API_VERSION 0 or undef: Tiger and earlier API only
  * OBJC_API_VERSION 2: Leopard and later API available
  */
 #if !defined(OBJC_API_VERSION)
-#   if MAC_OS_X_VERSION_MIN_REQUIRED < MAC_OS_X_VERSION_10_5
+#   if defined(__MAC_OS_X_VERSION_MIN_REQUIRED)  &&  __MAC_OS_X_VERSION_MIN_REQUIRED < __MAC_10_5
 #       define OBJC_API_VERSION 0
 #   else
 #       define OBJC_API_VERSION 2
 #   endif
 #endif
+
+
+/* OBJC_OLD_DISPATCH_PROTOTYPES == 0 enforces the rule that the dispatch 
+ * functions must be cast to an appropriate function pointer type. */
+#if !defined(OBJC_OLD_DISPATCH_PROTOTYPES)
+#   define OBJC_OLD_DISPATCH_PROTOTYPES 1
+#endif
+
 
 /* OBJC2_UNAVAILABLE: unavailable in objc 2.0, deprecated in Leopard */
 #if !defined(OBJC2_UNAVAILABLE)
@@ -48,16 +67,66 @@
 #   endif
 #endif
 
-#if !defined(OBJC_EXPORT)
-#   if defined(__cplusplus)
-#       define OBJC_EXPORT extern "C" 
+/* OBJC_ARC_UNAVAILABLE: unavailable with -fobjc-arc */
+#if !defined(OBJC_ARC_UNAVAILABLE)
+#   if __has_feature(objc_arr)
+#       if __has_extension(attribute_unavailable_with_message)
+#           define OBJC_ARC_UNAVAILABLE __attribute__((unavailable("not available in automatic reference counting mode")))
+#       else
+#           define OBJC_ARC_UNAVAILABLE __attribute__((unavailable))
+#       endif
 #   else
-#       define OBJC_EXPORT extern
+#       define OBJC_ARC_UNAVAILABLE
 #   endif
+#endif
+
+/* OBJC_GC_UNAVAILABLE: unavailable with -fobjc-gc or -fobjc-gc-only */
+#if !defined(OBJC_GC_UNAVAILABLE)
+#   if __OBJC_GC__
+#       if __has_extension(attribute_unavailable_with_message)
+#           define OBJC_GC_UNAVAILABLE __attribute__((unavailable("not available in garbage collecting mode")))
+#       else
+#           define OBJC_GC_UNAVAILABLE __attribute__((unavailable))
+#       endif
+#   else
+#       define OBJC_GC_UNAVAILABLE
+#   endif
+#endif
+
+#if !defined(OBJC_EXTERN)
+#   if defined(__cplusplus)
+#       define OBJC_EXTERN extern "C" 
+#   else
+#       define OBJC_EXTERN extern
+#   endif
+#endif
+
+#if !defined(OBJC_VISIBLE)
+#   if TARGET_OS_WIN32
+#       if defined(BUILDING_OBJC)
+#           define OBJC_VISIBLE __declspec(dllexport)
+#       else
+#           define OBJC_VISIBLE __declspec(dllimport)
+#       endif
+#   else
+#       define OBJC_VISIBLE  __attribute__((visibility("default")))
+#   endif
+#endif
+
+#if !defined(OBJC_EXPORT)
+#   define OBJC_EXPORT  OBJC_EXTERN OBJC_VISIBLE
 #endif
 
 #if !defined(OBJC_IMPORT)
 #   define OBJC_IMPORT extern
+#endif
+
+#ifndef __DARWIN_NULL
+#define __DARWIN_NULL NULL
+#endif
+
+#if !defined(OBJC_INLINE)
+#   define OBJC_INLINE __inline
 #endif
 
 #endif

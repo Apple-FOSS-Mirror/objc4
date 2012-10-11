@@ -26,11 +26,20 @@
  * A set of SELs used for SEL uniquing.
  */
 
+#ifndef _OBJC_SEL_SET_H_
+#define _OBJC_SEL_SET_H_
+
 #include <stdint.h>
+#include "objc-os.h"
+
+__BEGIN_DECLS
 
 struct __objc_sel_set;
 
-extern struct __objc_sel_set *__objc_sel_set_create(uint32_t capacity);
+extern struct __objc_sel_set *__objc_sel_set_create(size_t selrefCount);
 extern SEL __objc_sel_set_get(struct __objc_sel_set *sset, SEL candidate);
 extern void __objc_sel_set_add(struct __objc_sel_set *sset, SEL value);
             
+__END_DECLS
+
+#endif

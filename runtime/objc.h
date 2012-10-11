@@ -28,8 +28,9 @@
 #ifndef _OBJC_OBJC_H_
 #define _OBJC_OBJC_H_
 
-#import <objc/objc-api.h>		// for OBJC_EXPORT
-#import <sys/types.h>
+#include <sys/types.h>      // for __DARWIN_NULL
+#include <Availability.h>
+#include <objc/objc-api.h>
 
 
 typedef struct objc_class *Class;
@@ -38,33 +39,82 @@ typedef struct objc_object {
 } *id;
 
 
-typedef struct objc_selector 	*SEL;    
-typedef id 			(*IMP)(id, SEL, ...); 
+typedef struct objc_selector 	*SEL;
+
+#if !OBJC_OLD_DISPATCH_PROTOTYPES
+typedef void (*IMP)(void /* id, SEL, ... */ ); 
+#else
+typedef id (*IMP)(id, SEL, ...); 
+#endif
+
+#define OBJC_BOOL_DEFINED
+
 typedef signed char		BOOL; 
 // BOOL is explicitly signed so @encode(BOOL) == "c" rather than "C" 
 // even if -funsigned-char is used.
-#define OBJC_BOOL_DEFINED
 
-
-#define YES             (BOOL)1
-#define NO              (BOOL)0
+#if __has_feature(objc_bool)
+#define YES             __objc_yes
+#define NO              __objc_no
+#else
+#define YES             ((BOOL)1)
+#define NO              ((BOOL)0)
+#endif
 
 #ifndef Nil
-#define Nil __DARWIN_NULL	/* id of Nil class */
+# if __has_feature(cxx_nullptr)
+#   define Nil nullptr
+# else
+#   define Nil __DARWIN_NULL
+# endif
 #endif
 
 #ifndef nil
-#define nil __DARWIN_NULL	/* id of Nil instance */
+# if __has_feature(cxx_nullptr)
+#   define nil nullptr
+# else
+#   define nil __DARWIN_NULL
+# endif
 #endif
 
-#ifndef __OBJC_GC__
+#if ! (defined(__OBJC_GC__)  ||  __has_feature(objc_arr))
 #define __strong /* empty */
 #endif
 
-OBJC_EXPORT const char *sel_getName(SEL sel);
-OBJC_EXPORT SEL sel_registerName(const char *str);
-OBJC_EXPORT const char *object_getClassName(id obj);
-OBJC_EXPORT void *object_getIndexedIvars(id obj);
+#if !__has_feature(objc_arr)
+#define __unsafe_unretained /* empty */
+#define __autoreleasing /* empty */
+#endif
+
+
+OBJC_EXPORT const char *sel_getName(SEL sel)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+OBJC_EXPORT SEL sel_registerName(const char *str)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+OBJC_EXPORT const char *object_getClassName(id obj)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+OBJC_EXPORT void *object_getIndexedIvars(id obj)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+OBJC_EXPORT BOOL sel_isMapped(SEL sel)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+OBJC_EXPORT SEL sel_getUid(const char *str)
+    __OSX_AVAILABLE_STARTING(__MAC_10_0, __IPHONE_2_0);
+
+
+// Obsolete ARC conversions. Deprecation forthcoming.
+// Use CFBridgingRetain, CFBridgingRelease, and __bridge casts instead.
+
+typedef const void* objc_objectptr_t;
+
+#if __has_feature(objc_arc)
+#   define objc_retainedObject(o) ((__bridge_transfer id)(objc_objectptr_t)(o))
+#   define objc_unretainedObject(o) ((__bridge id)(objc_objectptr_t)(o))
+#   define objc_unretainedPointer(o) ((__bridge objc_objectptr_t)(id)(o))
+#else
+#   define objc_retainedObject(o) ((id)(objc_objectptr_t)(o))
+#   define objc_unretainedObject(o) ((id)(objc_objectptr_t)(o))
+#   define objc_unretainedPointer(o) ((objc_objectptr_t)(id)(o))
+#endif
 
 
 #if !__OBJC2__
@@ -80,9 +130,6 @@ OBJC_EXPORT void *object_getIndexedIvars(id obj);
     typedef unsigned uarith_t;
 #   define ARITH_SHIFT 16
 #endif
-
-OBJC_EXPORT BOOL sel_isMapped(SEL sel);
-OBJC_EXPORT SEL sel_getUid(const char *str);
 
 typedef char *STR;
 

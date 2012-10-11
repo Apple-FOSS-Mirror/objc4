@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007 Apple Inc.  All Rights Reserved.
+ * Copyright (c) 2007-2009 Apple Inc.  All Rights Reserved.
  * 
  * @APPLE_LICENSE_HEADER_START@
  * 
@@ -24,22 +24,29 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
-#import <stdio.h>
+#include <stdio.h>
+#include <stdbool.h>
 #include <fcntl.h>
-#import <sys/stat.h>
-#import <mach-o/fat.h>
-#import <mach-o/arch.h>
-#import <mach-o/loader.h>
+#include <limits.h>
+#include <sys/stat.h>
+#include <mach-o/fat.h>
+#include <mach-o/arch.h>
+#include <mach-o/loader.h>
 
-typedef char bool;
-#define true 1
-#define false 0
+// from "objc-private.h"
+// masks for objc_image_info.flags
+#define OBJC_IMAGE_IS_REPLACEMENT (1<<0)
+#define OBJC_IMAGE_SUPPORTS_GC (1<<1)
+#define OBJC_IMAGE_REQUIRES_GC (1<<2)
+#define OBJC_IMAGE_OPTIMIZED_BY_DYLD (1<<3)
+#define OBJC_IMAGE_SUPPORTS_COMPACTION (1<<4)
 
 bool debug;
 bool verbose;
 bool quiet;
 bool rrOnly;
 bool patch = true;
+bool unpatch = false;
 
 struct gcinfo {
         bool hasObjC;
@@ -60,14 +67,10 @@ int main(int argc, char *argv[]) {
     int i;
     //dumpinfo("/System/Library/Frameworks/AppKit.framework/AppKit");
     if (argc == 1) {
-        printf("Usage: gcinfo [-v] [-r] [--] library_or_executable_image [image2 ...]\n");
-        printf(" prints Garbage Collection readiness of named images, ignoring those without ObjC segments\n");
-        printf("  'GC'      - compiled with write-barriers, presumably otherwise aware\n");
-        printf("  'RR'      - retain/release (presumed) aware for non-GC\n");
-        printf("  'GC-only' - compiled with write-barriers and marked at compile time as not being retain/release savvy\n");
-        printf("  -v        - provide archtectural details\n");
-        printf("  -r        - only show libraries that are non-GC, e.g. RR only\n");
-        printf("  --        - read files & directories from stdin, e.g. find /Plug-ins | gcinfo --\n");
+        printf("Usage: markgc [-v] [-r] [--] library_or_executable_image [image2 ...]\n");
+        printf(" changes Garbage Collection readiness of named images, ignoring those without ObjC segments\n");
+        printf("  -p        - patch RR binary to (apparently) support GC (default)\n");
+        printf("  -u        - unpatch GC binary to RR only\n");
         printf("\nAuthor: blaine@apple.com\n");
         exit(0);
     }
@@ -84,22 +87,13 @@ int main(int argc, char *argv[]) {
             quiet = true;
             continue;
         }
-        if (!strcmp(argv[i], "-r")) {
-            quiet = true;
-            rrOnly = true;
-            continue;
-        }
         if (!strcmp(argv[i], "-p")) {
             patch = true;
             continue;
         }
-        if (!strcmp(argv[i], "--")) {
-            char buf[1024];
-            while (fgets(buf, 1024, stdin)) {
-                int len = strlen(buf);
-                buf[len-1] = 0;
-                dumpinfo(buf);
-            }
+        if (!strcmp(argv[i], "-u")) {
+            unpatch = true;
+            patch = false;
             continue;
         }
         dumpinfo(argv[i]);
@@ -116,34 +110,40 @@ void patchFile(uint32_t value, size_t offset) {
     int fd = open(FileName, 1);
     off_t lresult = lseek(fd, offset, SEEK_SET);
     if (lresult == -1) {
-        printf("couldn't seek to %x position on fd %d\n", offset, fd);
+        printf("couldn't seek to 0x%lx position on fd %d\n", offset, fd);
         ++Errors;
         return;
     }
-    int wresult = write(fd, &value, 4);
+    size_t wresult = write(fd, &value, 4);
     if (wresult != 4) {
         ++Errors;
         printf("didn't write new value\n");
     }
     else {
-        printf("patched %s at offset %p\n", FileName, offset);
+        printf("patched %s at offset 0x%lx\n", FileName, offset);
     }
     close(fd);
 }
 
-uint32_t iiflags(struct imageInfo *ii, uint32_t size, bool needsFlip) {
+uint32_t iiflags(struct imageInfo *ii, size_t size, bool needsFlip) {
     if (needsFlip) {
         ii->flags = OSSwapInt32(ii->flags);
     }
-    if (debug) printf("flags->%x, nitems %d\n", ii->flags, size/sizeof(struct imageInfo));
+    if (debug) printf("flags->%x, nitems %lu\n", ii->flags, size/sizeof(struct imageInfo));
+    uint32_t support_mask = (OBJC_IMAGE_SUPPORTS_GC | OBJC_IMAGE_SUPPORTS_COMPACTION);
     uint32_t flags = ii->flags;
-    if (patch && (flags&0x2)==0) {
+    if (patch && (flags & support_mask) != support_mask) {
         //printf("will patch %s at offset %p\n", FileName, (char*)(&ii->flags) - FileBase);
-        uint32_t newvalue = flags | 0x2;
+        uint32_t newvalue = flags | support_mask;
         if (needsFlip) newvalue = OSSwapInt32(newvalue);
         patchFile(newvalue, (char*)(&ii->flags) - FileBase);
     }
-    for(int niis = 1; niis < size/sizeof(struct imageInfo); ++niis) {
+    if (unpatch && (flags & support_mask) == support_mask) {
+        uint32_t newvalue = flags & ~support_mask;
+        if (needsFlip) newvalue = OSSwapInt32(newvalue);
+        patchFile(newvalue, (char*)(&ii->flags) - FileBase);
+    }
+    for(unsigned niis = 1; niis < size/sizeof(struct imageInfo); ++niis) {
         if (needsFlip) ii[niis].flags = OSSwapInt32(ii[niis].flags);
         if (ii[niis].flags != flags) {
             // uh, oh.
@@ -194,7 +194,7 @@ void dosect64(void *start, struct section_64 *sect, bool needsFlip, struct gcinf
         sect->size = OSSwapInt64(sect->size);
     }
     // these guys aren't inline - they point elsewhere
-    gcip->flags = iiflags(start + sect->offset, sect->size, needsFlip);
+    gcip->flags = iiflags(start + sect->offset, (size_t)sect->size, needsFlip);
 }
 
 void doseg32(void *start, struct segment_command *seg, bool needsFlip, struct gcinfo *gcip) {
@@ -207,9 +207,8 @@ void doseg32(void *start, struct segment_command *seg, bool needsFlip, struct gc
     if (seg->segname[0]) {
         if (strcmp("__OBJC", seg->segname)) return;
     }
-    int nsects;
     struct section *sect = (struct section *)(seg + 1);
-    for (int nsects = 0; nsects < seg->nsects; ++nsects) {
+    for (uint32_t nsects = 0; nsects < seg->nsects; ++nsects) {
         // sections directly follow
         
         dosect32(start, sect + nsects, needsFlip, gcip);
@@ -224,9 +223,8 @@ void doseg64(void *start, struct segment_command_64 *seg, bool needsFlip, struct
         seg->fileoff = OSSwapInt64(seg->fileoff);
         seg->nsects = OSSwapInt32(seg->nsects);
     }
-    int nsects;
     struct section_64 *sect = (struct section_64 *)(seg + 1);
-    for (int nsects = 0; nsects < seg->nsects; ++nsects) {
+    for (uint32_t nsects = 0; nsects < seg->nsects; ++nsects) {
         // sections directly follow
         
         dosect64(start, sect + nsects, needsFlip, gcip);
@@ -274,11 +272,11 @@ void dodylib(void *start, struct dylib_command *dylibCmd, bool needsFlip) {
     if (!verbose) return;
     if (needsFlip) {
     }
-    int count = dylibCmd->cmdsize - sizeof(struct dylib_command);
+    size_t count = dylibCmd->cmdsize - sizeof(struct dylib_command);
     //printf("offset is %d, count is %d\n", dylibCmd->dylib.name.offset, count);
     if (dylibCmd->dylib.name.offset > count) return;
     //printf("-->%.*s<---", count, ((void *)dylibCmd)+dylibCmd->dylib.name.offset);
-    if (verbose) printf("load %s\n", ((void *)dylibCmd)+dylibCmd->dylib.name.offset);
+    if (verbose) printf("load %s\n", ((char *)dylibCmd)+dylibCmd->dylib.name.offset);
 }
 
 struct load_command *doloadcommand(void *start, struct load_command *lc, bool needsFlip, bool is32, struct gcinfo *gcip) {
@@ -309,7 +307,7 @@ struct load_command *doloadcommand(void *start, struct load_command *lc, bool ne
     return (struct load_command *)((void *)lc + lc->cmdsize);
 }
 
-void doofile(void *start, uint32_t size, struct gcinfo *gcip) {
+void doofile(void *start, size_t size, struct gcinfo *gcip) {
     struct mach_header *mh = (struct mach_header *)start;
     bool isFlipped = false;
     if (mh->magic == MH_CIGAM || mh->magic == MH_CIGAM_64) {
@@ -323,17 +321,17 @@ void doofile(void *start, uint32_t size, struct gcinfo *gcip) {
         mh->flags = OSSwapInt32(mh->flags);
         isFlipped = true;
     }
-    if (rrOnly && mh->filetype != 6) return; // ignore executables
+    if (rrOnly && mh->filetype != MH_DYLIB) return; // ignore executables
     NXArchInfo *info = (NXArchInfo *)NXGetArchInfoFromCpuType(mh->cputype, mh->cpusubtype);
     //printf("%s:", info->description);
     gcip->arch = (char *)info->description;
     //if (debug) printf("...description is %s\n", info->description);
-    bool is32 = (mh->cputype == 18 || mh->cputype == 7);
+    bool is32 = !(mh->cputype & CPU_ARCH_ABI64);
     if (debug) printf("is 32? %d\n", is32);
     if (debug) printf("filetype -> %d\n", mh->filetype);
     if (debug) printf("ncmds -> %d\n", mh->ncmds);
     struct load_command *lc = (is32 ? (struct load_command *)(mh + 1) : (struct load_command *)((struct mach_header_64 *)start + 1));
-    int ncmds;
+    unsigned ncmds;
     for (ncmds = 0; ncmds < mh->ncmds; ++ncmds) {
         lc = doloadcommand(start, lc, isFlipped, is32, gcip);
     }
@@ -383,9 +381,10 @@ void dofat(void *start) {
         needsFlip = true;
     }
     if (debug) printf("%d architectures\n", fh->nfat_arch);
-    int narchs;
+    unsigned narchs;
     struct fat_arch *arch_ptr = (struct fat_arch *)(fh + 1);
     for (narchs = 0; narchs < fh->nfat_arch; ++narchs) {
+        if (debug) printf("doing arch %d\n", narchs);
         if (needsFlip) {
             arch_ptr->offset = OSSwapInt32(arch_ptr->offset);
             arch_ptr->size = OSSwapInt32(arch_ptr->size);
@@ -410,16 +409,21 @@ bool openFile(const char *filename) {
         close(fd);
         return false;
     }
-    FileSize = statb.st_size;
+	if ((sizeof(size_t) == 4) && ((size_t)statb.st_size > SIZE_T_MAX)) {
+        printf("couldn't malloc %llu bytes\n", statb.st_size);
+        close(fd);
+        return false;
+	}
+    FileSize = (size_t)statb.st_size;
     FileBase = malloc(FileSize);
     if (!FileBase) {
-        printf("couldn't malloc %d bytes\n", FileSize);
+        printf("couldn't malloc %lu bytes\n", FileSize);
         close(fd);
         return false;
     }
-    off_t readsize = read(fd, FileBase, FileSize);
-    if (readsize != FileSize) {
-        printf("read %d bytes, wanted %d\n", readsize, FileSize);
+    ssize_t readsize = read(fd, FileBase, FileSize);
+    if ((readsize == -1) || ((size_t)readsize != FileSize)) {
+        printf("read %ld bytes, wanted %ld\n", (size_t)readsize, FileSize);
         close(fd);
         return false;
     }
@@ -433,7 +437,7 @@ void closeFile() {
 
 void dumpinfo(char *filename) {
     initGCInfo();
-    openFile(filename);
+    if (!openFile(filename)) exit(1);
     struct fat_header *fh = (struct fat_header *)FileBase;
     if (fh->magic == FAT_MAGIC || fh->magic == FAT_CIGAM) {
         dofat((void *)FileBase);

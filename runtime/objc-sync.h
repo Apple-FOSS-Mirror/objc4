@@ -29,23 +29,21 @@
 // Begin synchronizing on 'obj'.  
 // Allocates recursive pthread_mutex associated with 'obj' if needed.
 // Returns OBJC_SYNC_SUCCESS once lock is acquired.  
-OBJC_EXPORT  int objc_sync_enter(id obj);
+OBJC_EXPORT  int objc_sync_enter(id obj)
+    __OSX_AVAILABLE_STARTING(__MAC_10_3, __IPHONE_2_0);
 
 // End synchronizing on 'obj'. 
 // Returns OBJC_SYNC_SUCCESS or OBJC_SYNC_NOT_OWNING_THREAD_ERROR
-OBJC_EXPORT  int objc_sync_exit(id obj);
+OBJC_EXPORT  int objc_sync_exit(id obj)
+    __OSX_AVAILABLE_STARTING(__MAC_10_3, __IPHONE_2_0);
 
-// Temporarily release lock on 'obj' and wait for another thread to notify on 'obj'
-// Return OBJC_SYNC_SUCCESS, OBJC_SYNC_NOT_OWNING_THREAD_ERROR, OBJC_SYNC_TIMED_OUT
-OBJC_EXPORT  int objc_sync_wait(id obj, long long milliSecondsMaxWait);
-
-// Wake up another thread waiting on 'obj'
-// Return OBJC_SYNC_SUCCESS, OBJC_SYNC_NOT_OWNING_THREAD_ERROR
-OBJC_EXPORT  int objc_sync_notify(id obj);
-
-// Wake up all threads waiting on 'obj'
-// Return OBJC_SYNC_SUCCESS, OBJC_SYNC_NOT_OWNING_THREAD_ERROR
-OBJC_EXPORT  int objc_sync_notifyAll(id obj);
+// The wait/notify functions have never worked correctly and no longer exist.
+OBJC_EXPORT  int objc_sync_wait(id obj, long long milliSecondsMaxWait) 
+    UNAVAILABLE_ATTRIBUTE;
+OBJC_EXPORT  int objc_sync_notify(id obj) 
+    UNAVAILABLE_ATTRIBUTE;
+OBJC_EXPORT  int objc_sync_notifyAll(id obj) 
+    UNAVAILABLE_ATTRIBUTE;
 
 enum {
 	OBJC_SYNC_SUCCESS                 = 0,

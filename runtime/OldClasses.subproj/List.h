@@ -32,73 +32,67 @@
 #ifndef _OBJC_LIST_H_
 #define _OBJC_LIST_H_
 
-#if defined(__LP64__)
+#if !__OBJC2__
 
-#warning class List unavailable in 64-bit Objective-C
+#include <objc/Object.h>
+#include <Availability.h>
 
-#else
-
-#warning The API in this header is obsoleted by NSArray.
-
-#import <objc/Object.h>
-#import <AvailabilityMacros.h>
-
-DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER 
+AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED
 @interface List : Object
 {
 @public
-    id 		*dataPtr  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER ;	/* data of the List object */
-    unsigned 	numElements  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER ;	/* Actual number of elements */
-    unsigned 	maxElements  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER ;	/* Total allocated elements */
+    id 		*dataPtr  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;	/* data of the List object */
+    unsigned 	numElements  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;	/* Actual number of elements */
+    unsigned 	maxElements  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;	/* Total allocated elements */
 }
 
 /* Creating, freeing */
 
-- free  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- freeObjects  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- copyFromZone:(void *)z  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (id)free  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)freeObjects  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)copyFromZone:(void *)z  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
   
 /* Initializing */
 
-- init  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- initCount:(unsigned)numSlots  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (id)init  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)initCount:(unsigned)numSlots  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /* Comparing two lists */
 
-- (BOOL)isEqual: anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (BOOL)isEqual: anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
   
 /* Managing the storage capacity */
 
-- (unsigned)capacity  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- setAvailableCapacity:(unsigned)numSlots  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (unsigned)capacity  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)setAvailableCapacity:(unsigned)numSlots  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /* Manipulating objects by index */
 
-- (unsigned)count  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- objectAt:(unsigned)index  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- lastObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- addObject:anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- insertObject:anObject at:(unsigned)index  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- removeObjectAt:(unsigned)index  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- removeLastObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- replaceObjectAt:(unsigned)index with:newObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- appendList: (List *)otherList  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (unsigned)count  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)objectAt:(unsigned)index  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)lastObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)addObject:anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)insertObject:anObject at:(unsigned)index  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)removeObjectAt:(unsigned)index  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)removeLastObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)replaceObjectAt:(unsigned)index with:newObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)appendList: (List *)otherList  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /* Manipulating objects by id */
 
-- (unsigned)indexOf:anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- addObjectIfAbsent:anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- removeObject:anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- replaceObject:anObject with:newObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (unsigned)indexOf:anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)addObjectIfAbsent:anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)removeObject:anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)replaceObject:anObject with:newObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /* Emptying the list */
 
-- empty  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (id)empty  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /* Sending messages to elements of the list */
 
-- makeObjectsPerform:(SEL)aSelector  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-- makeObjectsPerform:(SEL)aSelector with:anObject  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+- (id)makeObjectsPerform:(SEL)aSelector  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
+- (id)makeObjectsPerform:(SEL)aSelector with:anObject  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 /*
  * The following new... methods are now obsolete.  They remain in this 
@@ -106,14 +100,14 @@ DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER
  * and the init... methods defined in this class instead.
  */
 
-+ new  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
-+ newCount:(unsigned)numSlots  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
++ (id)new  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
++ (id)newCount:(unsigned)numSlots  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 @end
 
 typedef struct {
-    @defs(List)
-} NXListId  DEPRECATED_IN_MAC_OS_X_VERSION_10_5_AND_LATER;
+    @defs(List);
+} NXListId  AVAILABLE_MAC_OS_X_VERSION_10_0_AND_LATER_BUT_DEPRECATED;
 
 #define NX_ADDRESS(x) (((NXListId *)(x))->dataPtr)
 

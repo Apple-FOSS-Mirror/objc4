@@ -27,26 +27,25 @@
 	Responsibility: Bertrand Serlet
 */
 
-#ifndef __LP64__
+#ifndef __OBJC2__
 
-#import <stdlib.h>
-#import <stdio.h>
-#import <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
-#define OLD 1
-#import <objc/List.h>
+#include <objc/List.h>
 
 #define DATASIZE(count) ((count) * sizeof(id))
 
 @implementation  List
 
-+ initialize
++ (id)initialize
 {
     [self setVersion: 1];
     return self;
 }
 
-- initCount:(unsigned)numSlots
+- (id)initCount:(unsigned)numSlots
 {
     maxElements = numSlots;
     if (maxElements) 
@@ -54,28 +53,28 @@
     return self;
 }
 
-+ newCount:(unsigned)numSlots
++ (id)newCount:(unsigned)numSlots
 {
     return [[self alloc] initCount:numSlots];
 }
 
-+ new
++ (id)new
 {
     return [self newCount:0];
 }
 
-- init
+- (id)init
 {
     return [self initCount:0];
 }
 
-- free
+- (id)free
 {
     free(dataPtr);
     return [super free];
 }
 
-- freeObjects
+- (id)freeObjects
 {
     id element;
     while ((element = [self removeLastObject]))
@@ -83,7 +82,7 @@
     return self;
 }
 
-- copyFromZone:(void *)z
+- (id)copyFromZone:(void *)z
 {
     List	*new = [[[self class] alloc] initCount: numElements];
     new->numElements = numElements;
@@ -110,7 +109,7 @@
     return numElements;
 }
 
-- objectAt:(unsigned)index
+- (id)objectAt:(unsigned)index
 {
     if (index >= numElements)
 	return nil;
@@ -129,14 +128,14 @@
     return NX_NOT_IN_LIST;
 }
 
-- lastObject
+- (id)lastObject
 {
     if (! numElements)
 	return nil;
     return dataPtr[numElements - 1];
 }
 
-- setAvailableCapacity:(unsigned)numSlots
+- (id)setAvailableCapacity:(unsigned)numSlots
 {
     volatile id *tempDataPtr;
     if (numSlots < numElements) return nil;
@@ -146,7 +145,7 @@
     return self;
 }
 
-- insertObject:anObject at:(unsigned)index
+- (id)insertObject:anObject at:(unsigned)index
 {
     register id *this, *last, *prev;
     if (! anObject) return nil;
@@ -169,14 +168,14 @@
     return self;
 }
 
-- addObject:anObject
+- (id)addObject:anObject
 {
     return [self insertObject:anObject at:numElements];
     
 }
 
 
-- addObjectIfAbsent:anObject
+- (id)addObjectIfAbsent:anObject
 {
     register id *this, *last;
     if (! anObject) return nil;
@@ -192,7 +191,7 @@
 }
 
 
-- removeObjectAt:(unsigned)index
+- (id)removeObjectAt:(unsigned)index
 {
     register id *this, *last, *next;
     id retval;
@@ -208,7 +207,7 @@
     return retval;
 }
 
-- removeObject:anObject
+- (id)removeObject:anObject
 {
     register id *this, *last;
     this = dataPtr;
@@ -221,20 +220,20 @@
     return nil;
 }
 
-- removeLastObject
+- (id)removeLastObject
 {
     if (! numElements)
 	return nil;
     return [self removeObjectAt: numElements - 1];
 }
 
-- empty
+- (id)empty
 {
     numElements = 0;
     return self;
 }
 
-- replaceObject:anObject with:newObject
+- (id)replaceObject:anObject with:newObject
 {
     register id *this, *last;
     if (! newObject)
@@ -251,7 +250,7 @@
     return nil;
 }
 
-- replaceObjectAt:(unsigned)index with:newObject
+- (id)replaceObjectAt:(unsigned)index with:newObject
 {
     register id *this;
     id retval;
@@ -265,7 +264,7 @@
     return retval;
 }
 
-- makeObjectsPerform:(SEL)aSelector
+- (id)makeObjectsPerform:(SEL)aSelector
 {
     unsigned	count = numElements;
     while (count--)
@@ -273,7 +272,7 @@
     return self;
 }
 
-- makeObjectsPerform:(SEL)aSelector with:anObject
+- (id)makeObjectsPerform:(SEL)aSelector with:anObject
 {
     unsigned	count = numElements;
     while (count--)
@@ -281,7 +280,7 @@
     return self;
 }
 
--appendList: (List *)otherList
+-(id)appendList: (List *)otherList
 {
     unsigned i, count;
     
